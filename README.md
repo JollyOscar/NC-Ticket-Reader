@@ -1,80 +1,63 @@
 # Nova Construction Ticket App
 
-A lightweight web app for reviewing, approving, and exporting quarry ticket data from uploaded ticket images and PDFs.
+Web application for extracting, reviewing, approving, and exporting quarry ticket data.
 
-## Overview
+## Platform
 
-This project is built for office staff to:
-- upload ticket images or PDFs,
-- run OCR extraction,
-- review fields before approval,
-- export approved tickets to CSV for downstream invoice workflows.
+- Streamlit application deployed on Railway
+- Railway Postgres for ticket records and export-batch history
+- Railway Bucket for ticket images and CSV exports
+- Tesseract OCR by default for low-cost client testing
+- Google Vision as an explicit production OCR option
 
-The public-facing demo mode is intentionally safe and low-cost by default, using local OCR. The Google Vision path remains available as an explicit production option for higher-accuracy processing.
-
-## Repository structure
+## Repository layout
 
 ```text
-Nova Construction Ticket App/
-├── app.py                       # Streamlit app and ticket workflow
-├── backend_logging.py           # Logging utilities
-├── ocr.py                       # OCR extraction and normalization logic
-├── Dockerfile                   # Railway/container setup
-├── railway.json                 # Railway deployment config
+├── app.py                       # Ticket workflow and storage integration
+├── ocr.py                       # OCR extraction and field normalization
+├── backend_logging.py           # Application logging
+├── Dockerfile                   # Railway container image
+├── railway.json                 # Railway runtime configuration
 ├── requirements.txt             # Python dependencies
-├── .env.example                 # Environment variable template
-├── .gitignore                   # Repo hygiene rules
-├── README.md                    # Project overview and instructions
-├── Launch Nova Ticket App.bat    # Local Windows shortcut for app startup
-├── run.bat                      # Local app launcher
-├── run_public_demo.bat          # Demo-safe OCR startup script
-├── run_google_release.bat       # Google Vision startup script
-├──
-├── data/                        # Runtime storage (kept as folders, not committed sample data)
-│   ├── uploads/.gitkeep
-│   ├── exports/.gitkeep
-│   ├── logs/.gitkeep
-│   └── .gitkeep
-├── docs/                        # Client research, proposal, and implementation notes
-│   ├── client_research/
-│   ├── google-form-generator.gs
-│   ├── google-form-generator-v2.gs
-│   ├── google-form-quick-setup.md
-│   ├── uncle-clarification-question-list.md
-│   └── v1-implementation-checklist.md
-├── scripts/                     # Operational/helper scripts
-│   ├── clean_test_data.py
-│   ├── run_ticket_demo.py
-│   └── verify_no_hardcoded.py
-├── tests/                       # Regression checks
-│   └── test_ocr_default_provider.py
-└── .venv/                       # Local virtual environment (not committed)
+├── .env.example                 # Local/deployment environment template
+├── Launch Nova Ticket App.bat    # Windows local launcher
+├── run.bat                      # Local Streamlit launcher
+├── run_google_release.bat       # Local Google Vision launcher
+├── data/                        # Ignored local runtime storage
+└── tests/                       # Regression tests and ticket fixtures
 ```
 
-## Local startup
-
-On Windows, run:
+## Local development
 
 ```bat
+py -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
 Launch Nova Ticket App.bat
 ```
 
-or from a terminal:
+The app starts at `http://localhost:8501`.
+
+## Railway deployment
+
+Railway deploys from the `main` branch using the included Dockerfile and `railway.json`.
+
+The production service requires:
+
+- `DATABASE_URL` referencing the Railway Postgres private URL
+- `AWS_ENDPOINT_URL`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_S3_BUCKET_NAME`, and `AWS_DEFAULT_REGION` from the Railway bucket
+- `PORT=8089`, matching the service's Railway domain target port
+
+The live application is available at <https://nc-ticket-reader-production.up.railway.app/>.
+
+## OCR modes
+
+- Default: `pytesseract`, appropriate for public demos and manual review workflows
+- Production: `OCR_PROVIDER=google_vision`, requiring a configured Google service account and billing-enabled Vision project
+
+## Verification
 
 ```bat
-python -m streamlit run app.py
+.venv\Scripts\python -m pytest tests -q
 ```
 
-## Environment notes
-
-Use the .env template to configure deployed or demo settings. The app defaults to a safe local OCR mode unless a paid OCR provider is explicitly enabled.
-
-## Production notes
-
-- Public/demo mode: Tesseract via local OCR
-- Production override: `OCR_PROVIDER=google_vision`
-- Railway: container deploys from this repo and reads environment variables for cloud services when configured
-
-## Clean repo policy
-
-The project intentionally excludes generated caches, temp debug artifacts, uploaded ticket files, exported CSVs, and secrets from source control. Runtime folders remain in place but are empty unless the app is actively processing data.
+Generated images, exports, SQLite databases, logs, caches, virtual environments, and credentials are intentionally excluded from source control.
