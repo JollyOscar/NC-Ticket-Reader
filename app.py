@@ -792,24 +792,7 @@ def validate_deliver_to_quality(value: str) -> Optional[str]:
 
 
 def render_upload_tab() -> None:
-    st.subheader("1) Upload + OCR")
-    provider = os.getenv("OCR_PROVIDER", "").strip().lower()
-    if provider == "google_vision":
-        st.info(
-            "Production mode: Google Vision OCR is active. This path can incur Google Cloud billing after the free tier is exhausted."
-        )
-        st.caption(
-            "Confidence shown per ticket is the average word-level score "
-            "Google Vision returns — high-quality photos typically score 85\u201395%."
-        )
-    else:
-        st.success(
-            "Demo mode: pytesseract OCR is active. This path is local and does not incur Google billing."
-        )
-        st.caption(
-            "Confidence is fixed at 55% for Tesseract — it does not produce per-word scores. "
-            "Use OCR_PROVIDER=google_vision only for a paid Google Cloud setup."
-        )
+    st.subheader("Upload tickets")
     uploaded = st.file_uploader(
         "Upload ticket images",
         type=["png", "jpg", "jpeg", "pdf"],
@@ -1460,11 +1443,10 @@ hr { border-color: #E5E7EB !important; }
 """, unsafe_allow_html=True)
 
     # ── Page content ──────────────────────────────────────────────────────────
-    st.title("Nova Construction — Ticket Processing System")
-    st.caption("Step 1: Upload Photos  \u2192  Step 2: Review & Confirm  \u2192  Step 3: Export for Invoicing")
+    st.title("Nova Construction — Ticket Processing")
     st.divider()
 
-    tabs = st.tabs(["1. Upload Tickets", "2. Review & Approve", "3. Exported Tickets", "4. Ticket History", "5. System Admin"])
+    tabs = st.tabs(["Upload", "Review", "Exports", "History", "System"])
 
     with tabs[0]:
         render_upload_tab()
