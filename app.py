@@ -6,7 +6,10 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import boto3
+import psycopg2
 import streamlit as st
+from psycopg2.extras import RealDictCursor
 from backend_logging import get_log_path, get_logger, tail_log_lines
 from ocr import extract_ticket_data
 
@@ -27,6 +30,26 @@ REQUIRED_FIELDS = [
 logger = get_logger("app")
 
 
+def postgres_enabled() -> bool:
+    return bool(os.getenv("DATABASE_URL", "").strip())
+
+
+def bucket_enabled() -> bool:
+    required = [
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_S3_BUCKET_NAME",
+        "AWS_ENDPOINT_URL",
+    ]
+    return all(os.getenv(name, "").strip() for name in required)
+
+
+def _db_param_placeholder_count(count: int) -> str:
+    if postgres_enabled():
+        return ", ".join("%s" for _ in range(count))
+    return ", ".join("?" for _ in range(count))
+
+
 def duplicates_check_enabled() -> bool:
     return os.getenv("IGNORE_DUPLICATE_CHECK", "").strip().lower() not in {"1", "true", "yes", "on"}
 
@@ -37,7 +60,47 @@ def ensure_paths() -> None:
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def get_conn() -> sqlite3.Connection:
+def get_s3_client():
+    if not bucket_enabled():
+        return None
+    return boto3.client(
+        "s3",
+        endpoint_url=os.getenv("AWS_ENDPOINT_URL"),
+        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        region_name=os.getenv("AWS_DEFAULT_REGION", "auto"),
+        config=boto3.session.Config(s3={"addressing_style": "virtual"}),
+    )
+
+
+def upload_to_bucket(local_path: Path, prefix: str) -> Optional[str]:
+    if not bucket_enabled():
+        return None
+    s3 = get_s3_client()
+    if s3 is None:
+        return None
+    bucket_name = os.getenv("AWS_S3_BUCKET_NAME")
+    key = f"{prefix.rstrip('/')}/{dt.datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')}_{local_path.name}"
+    try:
+        s3.upload_file(str(local_path), bucket_name, key)
+        endpoint = os.getenv("AWS_ENDPOINT_URL", "").rstrip("/")
+        return f"{endpoint}/{bucket_name}/{key}"
+    except Exception as exc:
+        logger.warning("bucket_upload_failed prefix=%s key=%s error=%s", prefix, key, exc)
+        return None
+
+
+def persist_file(local_path: Path, prefix: str) -> Path:
+    if bucket_enabled():
+        upload_to_bucket(local_path, prefix)
+    return local_path
+
+
+def get_conn() -> Any:
+    if postgres_enabled():
+        conn = psycopg2.connect(os.getenv("DATABASE_URL"), sslmode="require")
+        conn.autocommit = False
+        return conn
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
@@ -45,53 +108,104 @@ def get_conn() -> sqlite3.Connection:
 
 def init_db() -> None:
     with get_conn() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS tickets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ticket_id TEXT,
-                ticket_date TEXT,
-                truck_or_plate TEXT,
-                material_type TEXT,
-                job_no TEXT,
-                quarry_name TEXT,
-                trucker TEXT,
-                sold_to TEXT,
-                deliver_to TEXT,
-                received_by TEXT,
-                gross_weight TEXT,
-                tare_weight TEXT,
-                net_weight TEXT,
-                source_site TEXT,
-                destination_site TEXT,
-                confidence_score REAL NOT NULL,
-                ocr_provider TEXT NOT NULL DEFAULT 'mock',
-                review_status TEXT NOT NULL,
-                invoice_number TEXT,
-                invoice_status TEXT NOT NULL DEFAULT 'not_generated',
-                image_path TEXT NOT NULL,
-                reviewed_by TEXT,
-                reviewed_at TEXT,
-                exported_at TEXT,
-                export_batch_id INTEGER,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+        if postgres_enabled():
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tickets (
+                    id SERIAL PRIMARY KEY,
+                    ticket_id TEXT,
+                    ticket_date TEXT,
+                    truck_or_plate TEXT,
+                    material_type TEXT,
+                    job_no TEXT,
+                    quarry_name TEXT,
+                    trucker TEXT,
+                    sold_to TEXT,
+                    deliver_to TEXT,
+                    received_by TEXT,
+                    gross_weight TEXT,
+                    tare_weight TEXT,
+                    net_weight TEXT,
+                    source_site TEXT,
+                    destination_site TEXT,
+                    confidence_score DOUBLE PRECISION NOT NULL,
+                    ocr_provider TEXT NOT NULL DEFAULT 'mock',
+                    review_status TEXT NOT NULL,
+                    invoice_number TEXT,
+                    invoice_status TEXT NOT NULL DEFAULT 'not_generated',
+                    image_path TEXT NOT NULL,
+                    reviewed_by TEXT,
+                    reviewed_at TEXT,
+                    exported_at TEXT,
+                    export_batch_id INTEGER,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
             )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS export_batches (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                file_name TEXT NOT NULL,
-                exported_at TEXT NOT NULL,
-                ticket_count INTEGER NOT NULL
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS export_batches (
+                    id SERIAL PRIMARY KEY,
+                    file_name TEXT NOT NULL,
+                    exported_at TEXT NOT NULL,
+                    ticket_count INTEGER NOT NULL
+                )
+                """
             )
-            """
-        )
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'tickets'"
+            )
+            existing = {row[0] for row in cursor.fetchall()}
+        else:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tickets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticket_id TEXT,
+                    ticket_date TEXT,
+                    truck_or_plate TEXT,
+                    material_type TEXT,
+                    job_no TEXT,
+                    quarry_name TEXT,
+                    trucker TEXT,
+                    sold_to TEXT,
+                    deliver_to TEXT,
+                    received_by TEXT,
+                    gross_weight TEXT,
+                    tare_weight TEXT,
+                    net_weight TEXT,
+                    source_site TEXT,
+                    destination_site TEXT,
+                    confidence_score REAL NOT NULL,
+                    ocr_provider TEXT NOT NULL DEFAULT 'mock',
+                    review_status TEXT NOT NULL,
+                    invoice_number TEXT,
+                    invoice_status TEXT NOT NULL DEFAULT 'not_generated',
+                    image_path TEXT NOT NULL,
+                    reviewed_by TEXT,
+                    reviewed_at TEXT,
+                    exported_at TEXT,
+                    export_batch_id INTEGER,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS export_batches (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    file_name TEXT NOT NULL,
+                    exported_at TEXT NOT NULL,
+                    ticket_count INTEGER NOT NULL
+                )
+                """
+            )
+            cursor = conn.execute("PRAGMA table_info(tickets)")
+            existing = {row[1] for row in cursor.fetchall()}
 
-        cursor = conn.execute("PRAGMA table_info(tickets)")
-        existing = {row[1] for row in cursor.fetchall()}
         maybe_add = {
             "job_no": "TEXT",
             "quarry_name": "TEXT",
@@ -124,41 +238,78 @@ def reopen_ticket_for_correction(ticket_row_id: int, image_path: Optional[str] =
     now = dt.datetime.utcnow().isoformat()
     with get_conn() as conn:
         if image_path:
-            conn.execute(
-                """
-                UPDATE tickets
-                SET image_path = ?, review_status = 'needs_review', exported_at = NULL,
-                    export_batch_id = NULL, updated_at = ?
-                WHERE id = ?
-                """,
-                (image_path, now, ticket_row_id),
-            )
+            parameters = (image_path, now, ticket_row_id)
+            if postgres_enabled():
+                conn.execute(
+                    """
+                    UPDATE tickets
+                    SET image_path = %s, review_status = 'needs_review', exported_at = NULL,
+                        export_batch_id = NULL, updated_at = %s
+                    WHERE id = %s
+                    """,
+                    parameters,
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE tickets
+                    SET image_path = ?, review_status = 'needs_review', exported_at = NULL,
+                        export_batch_id = NULL, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    parameters,
+                )
         else:
-            conn.execute(
-                """
-                UPDATE tickets
-                SET review_status = 'needs_review', exported_at = NULL,
-                    export_batch_id = NULL, updated_at = ?
-                WHERE id = ?
-                """,
-                (now, ticket_row_id),
-            )
+            parameters = (now, ticket_row_id)
+            if postgres_enabled():
+                conn.execute(
+                    """
+                    UPDATE tickets
+                    SET review_status = 'needs_review', exported_at = NULL,
+                        export_batch_id = NULL, updated_at = %s
+                    WHERE id = %s
+                    """,
+                    parameters,
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE tickets
+                    SET review_status = 'needs_review', exported_at = NULL,
+                        export_batch_id = NULL, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    parameters,
+                )
     logger.info("ticket_reopened_for_correction row_id=%s", ticket_row_id)
 
 
 def reopen_export_batch(batch_id: int) -> int:
     now = dt.datetime.utcnow().isoformat()
     with get_conn() as conn:
-        cursor = conn.execute(
-            """
-            UPDATE tickets
-            SET exported_at = NULL, export_batch_id = NULL, updated_at = ?
-            WHERE export_batch_id = ?
-            """,
-            (now, batch_id),
-        )
-    logger.info("export_batch_reopened batch_id=%s tickets=%s", batch_id, cursor.rowcount)
-    return cursor.rowcount
+        if postgres_enabled():
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE tickets
+                SET exported_at = NULL, export_batch_id = NULL, updated_at = %s
+                WHERE export_batch_id = %s
+                """,
+                (now, batch_id),
+            )
+            rowcount = cursor.rowcount
+        else:
+            cursor = conn.execute(
+                """
+                UPDATE tickets
+                SET exported_at = NULL, export_batch_id = NULL, updated_at = ?
+                WHERE export_batch_id = ?
+                """,
+                (now, batch_id),
+            )
+            rowcount = cursor.rowcount
+    logger.info("export_batch_reopened batch_id=%s tickets=%s", batch_id, rowcount)
+    return rowcount
 
 
 def insert_ticket(fields: Dict[str, str], confidence_score: float, image_path: str, ocr_provider: str, raw_ocr_text: str = "") -> None:
@@ -166,41 +317,56 @@ def insert_ticket(fields: Dict[str, str], confidence_score: float, image_path: s
     now = dt.datetime.utcnow().isoformat()
 
     with get_conn() as conn:
-        conn.execute(
-            """
-            INSERT INTO tickets (
-                ticket_id, ticket_date, truck_or_plate, material_type,
-                job_no, quarry_name, trucker, sold_to, deliver_to, received_by,
-                gross_weight, tare_weight, net_weight, source_site,
-                destination_site, confidence_score, ocr_provider, review_status,
-                image_path, raw_ocr_text, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                fields.get("ticket_id", ""),
-                fields.get("ticket_date", ""),
-                fields.get("truck_or_plate", ""),
-                fields.get("material_type", ""),
-                fields.get("job_no", ""),
-                fields.get("quarry_name", ""),
-                fields.get("trucker", ""),
-                fields.get("sold_to", ""),
-                fields.get("deliver_to", ""),
-                fields.get("received_by", ""),
-                fields.get("gross_weight", ""),
-                fields.get("tare_weight", ""),
-                fields.get("net_weight", ""),
-                fields.get("source_site", ""),
-                fields.get("destination_site", ""),
-                confidence_score,
-                ocr_provider,
-                status,
-                image_path,
-                raw_ocr_text,
-                now,
-                now,
-            ),
+        params = (
+            fields.get("ticket_id", ""),
+            fields.get("ticket_date", ""),
+            fields.get("truck_or_plate", ""),
+            fields.get("material_type", ""),
+            fields.get("job_no", ""),
+            fields.get("quarry_name", ""),
+            fields.get("trucker", ""),
+            fields.get("sold_to", ""),
+            fields.get("deliver_to", ""),
+            fields.get("received_by", ""),
+            fields.get("gross_weight", ""),
+            fields.get("tare_weight", ""),
+            fields.get("net_weight", ""),
+            fields.get("source_site", ""),
+            fields.get("destination_site", ""),
+            confidence_score,
+            ocr_provider,
+            status,
+            image_path,
+            raw_ocr_text,
+            now,
+            now,
         )
+        if postgres_enabled():
+            conn.execute(
+                """
+                INSERT INTO tickets (
+                    ticket_id, ticket_date, truck_or_plate, material_type,
+                    job_no, quarry_name, trucker, sold_to, deliver_to, received_by,
+                    gross_weight, tare_weight, net_weight, source_site,
+                    destination_site, confidence_score, ocr_provider, review_status,
+                    image_path, raw_ocr_text, created_at, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                params,
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO tickets (
+                    ticket_id, ticket_date, truck_or_plate, material_type,
+                    job_no, quarry_name, trucker, sold_to, deliver_to, received_by,
+                    gross_weight, tare_weight, net_weight, source_site,
+                    destination_site, confidence_score, ocr_provider, review_status,
+                    image_path, raw_ocr_text, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                params,
+            )
     logger.info(
         "ticket_inserted ticket_id=%s provider=%s confidence=%.2f image=%s",
         fields.get("ticket_id", ""),
@@ -216,7 +382,7 @@ def fetch_tickets(statuses: Optional[List[str]] = None) -> List[sqlite3.Row]:
             cursor = conn.execute("SELECT * FROM tickets ORDER BY id DESC")
             return cursor.fetchall()
 
-        placeholders = ",".join("?" for _ in statuses)
+        placeholders = _db_param_placeholder_count(len(statuses))
         cursor = conn.execute(
             f"SELECT * FROM tickets WHERE review_status IN ({placeholders}) ORDER BY id DESC",
             statuses,
@@ -226,7 +392,8 @@ def fetch_tickets(statuses: Optional[List[str]] = None) -> List[sqlite3.Row]:
 
 def fetch_ticket(ticket_row_id: int) -> Optional[sqlite3.Row]:
     with get_conn() as conn:
-        cursor = conn.execute("SELECT * FROM tickets WHERE id = ?", (ticket_row_id,))
+        l = (ticket_row_id,)
+        cursor = conn.execute("SELECT * FROM tickets WHERE id = %s" if postgres_enabled() else "SELECT * FROM tickets WHERE id = ?", l)
         row = cursor.fetchone()
     return row
 
@@ -236,19 +403,32 @@ def ticket_exists(ticket_id: str, ticket_date: str, exclude_id: int) -> bool:
         return False
 
     with get_conn() as conn:
-        cursor = conn.execute(
-            """
-            SELECT COUNT(*) AS cnt
-            FROM tickets
-            WHERE ticket_id = ?
-              AND ticket_date = ?
-              AND review_status = 'approved'
-              AND id != ?
-            """,
-            (ticket_id, ticket_date, exclude_id),
-        )
+        if postgres_enabled():
+            cursor = conn.execute(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM tickets
+                WHERE ticket_id = %s
+                  AND ticket_date = %s
+                  AND review_status = 'approved'
+                  AND id != %s
+                """,
+                (ticket_id, ticket_date, exclude_id),
+            )
+        else:
+            cursor = conn.execute(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM tickets
+                WHERE ticket_id = ?
+                  AND ticket_date = ?
+                  AND review_status = 'approved'
+                  AND id != ?
+                """,
+                (ticket_id, ticket_date, exclude_id),
+            )
         result = cursor.fetchone()
-    return bool(result["cnt"])
+    return bool(result["cnt"] if isinstance(result, dict) else result[0])
 
 
 def approve_ticket(ticket_row_id: int, edited: Dict[str, str]) -> Optional[str]:
@@ -264,50 +444,78 @@ def approve_ticket(ticket_row_id: int, edited: Dict[str, str]) -> Optional[str]:
     now = dt.datetime.utcnow().isoformat()
 
     with get_conn() as conn:
-        conn.execute(
-            """
-            UPDATE tickets
-            SET ticket_id = ?,
-                ticket_date = ?,
-                truck_or_plate = ?,
-                material_type = ?,
-                job_no = ?,
-                quarry_name = ?,
-                trucker = ?,
-                sold_to = ?,
-                deliver_to = ?,
-                received_by = ?,
-                gross_weight = ?,
-                tare_weight = ?,
-                net_weight = ?,
-                source_site = ?,
-                destination_site = ?,
-                review_status = 'approved',
-                reviewed_at = ?,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                edited["ticket_id"],
-                edited["ticket_date"],
-                edited.get("truck_or_plate", ""),
-                edited["material_type"],
-                edited.get("job_no", ""),
-                edited.get("quarry_name", ""),
-                edited.get("trucker", ""),
-                edited["sold_to"],
-                edited.get("deliver_to", ""),
-                edited.get("received_by", ""),
-                edited["gross_weight"],
-                edited["tare_weight"],
-                edited["net_weight"],
-                edited.get("quarry_name", ""),
-                edited.get("deliver_to", ""),
-                now,
-                now,
-                ticket_row_id,
-            ),
+        params = (
+            edited["ticket_id"],
+            edited["ticket_date"],
+            edited.get("truck_or_plate", ""),
+            edited["material_type"],
+            edited.get("job_no", ""),
+            edited.get("quarry_name", ""),
+            edited.get("trucker", ""),
+            edited["sold_to"],
+            edited.get("deliver_to", ""),
+            edited.get("received_by", ""),
+            edited["gross_weight"],
+            edited["tare_weight"],
+            edited["net_weight"],
+            edited.get("quarry_name", ""),
+            edited.get("deliver_to", ""),
+            now,
+            now,
+            ticket_row_id,
         )
+        if postgres_enabled():
+            conn.execute(
+                """
+                UPDATE tickets
+                SET ticket_id = %s,
+                    ticket_date = %s,
+                    truck_or_plate = %s,
+                    material_type = %s,
+                    job_no = %s,
+                    quarry_name = %s,
+                    trucker = %s,
+                    sold_to = %s,
+                    deliver_to = %s,
+                    received_by = %s,
+                    gross_weight = %s,
+                    tare_weight = %s,
+                    net_weight = %s,
+                    source_site = %s,
+                    destination_site = %s,
+                    review_status = 'approved',
+                    reviewed_at = %s,
+                    updated_at = %s
+                WHERE id = %s
+                """,
+                params,
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE tickets
+                SET ticket_id = ?,
+                    ticket_date = ?,
+                    truck_or_plate = ?,
+                    material_type = ?,
+                    job_no = ?,
+                    quarry_name = ?,
+                    trucker = ?,
+                    sold_to = ?,
+                    deliver_to = ?,
+                    received_by = ?,
+                    gross_weight = ?,
+                    tare_weight = ?,
+                    net_weight = ?,
+                    source_site = ?,
+                    destination_site = ?,
+                    review_status = 'approved',
+                    reviewed_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                params,
+            )
     logger.info("ticket_approved row_id=%s ticket_id=%s", ticket_row_id, edited.get("ticket_id", ""))
     return None
 
@@ -315,31 +523,57 @@ def approve_ticket(ticket_row_id: int, edited: Dict[str, str]) -> Optional[str]:
 def reject_ticket(ticket_row_id: int, reviewer: str) -> None:
     now = dt.datetime.utcnow().isoformat()
     with get_conn() as conn:
-        conn.execute(
-            """
-            UPDATE tickets
-            SET review_status = 'rejected',
-                reviewed_by = ?,
-                reviewed_at = ?,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (reviewer, now, now, ticket_row_id),
-        )
+        params = (reviewer, now, now, ticket_row_id)
+        if postgres_enabled():
+            conn.execute(
+                """
+                UPDATE tickets
+                SET review_status = 'rejected',
+                    reviewed_by = %s,
+                    reviewed_at = %s,
+                    updated_at = %s
+                WHERE id = %s
+                """,
+                params,
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE tickets
+                SET review_status = 'rejected',
+                    reviewed_by = ?,
+                    reviewed_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                params,
+            )
     logger.info("ticket_rejected row_id=%s reviewer=%s", ticket_row_id, reviewer)
 
 
 def export_approved_to_csv() -> Optional[Path]:
     with get_conn() as conn:
-        cursor = conn.execute(
-            """
-            SELECT * FROM tickets
-            WHERE review_status = 'approved'
-              AND exported_at IS NULL
-            ORDER BY id ASC
-            """
-        )
-        rows = cursor.fetchall()
+        if postgres_enabled():
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute(
+                """
+                SELECT * FROM tickets
+                WHERE review_status = 'approved'
+                  AND exported_at IS NULL
+                ORDER BY id ASC
+                """
+            )
+            rows = cursor.fetchall()
+        else:
+            cursor = conn.execute(
+                """
+                SELECT * FROM tickets
+                WHERE review_status = 'approved'
+                  AND exported_at IS NULL
+                ORDER BY id ASC
+                """
+            )
+            rows = cursor.fetchall()
 
         if not rows:
             return None
@@ -347,7 +581,6 @@ def export_approved_to_csv() -> Optional[Path]:
         file_name = f"ticket_export_{dt.datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
         out_path = EXPORT_DIR / file_name
 
-        # Column names aligned with the TicketData sheet in the client's Excel workbook
         csv_headers = [
             "Customer",
             "Ticket Date",
@@ -387,21 +620,39 @@ def export_approved_to_csv() -> Optional[Path]:
             for row in rows:
                 writer.writerow([row[field] for field in db_fields])
 
+        if bucket_enabled():
+            upload_to_bucket(out_path, "exports")
+
         now = dt.datetime.utcnow().isoformat()
-        batch_cursor = conn.execute(
-            """
-            INSERT INTO export_batches (file_name, exported_at, ticket_count)
-            VALUES (?, ?, ?)
-            """,
-            (file_name, now, len(rows)),
-        )
-        batch_id = batch_cursor.lastrowid
         ids = [row["id"] for row in rows]
-        placeholders = ",".join("?" for _ in ids)
-        conn.execute(
-            f"UPDATE tickets SET exported_at = ?, export_batch_id = ?, updated_at = ? WHERE id IN ({placeholders})",
-            [now, batch_id, now, *ids],
-        )
+        if postgres_enabled():
+            batch_cursor = conn.cursor()
+            batch_cursor.execute(
+                """
+                INSERT INTO export_batches (file_name, exported_at, ticket_count)
+                VALUES (%s, %s, %s)
+                """,
+                (file_name, now, len(rows)),
+            )
+            batch_id = batch_cursor.lastrowid
+            conn.execute(
+                f"UPDATE tickets SET exported_at = %s, export_batch_id = %s, updated_at = %s WHERE id IN ({_db_param_placeholder_count(len(ids))})",
+                [now, batch_id, now, *ids],
+            )
+        else:
+            batch_cursor = conn.execute(
+                """
+                INSERT INTO export_batches (file_name, exported_at, ticket_count)
+                VALUES (?, ?, ?)
+                """,
+                (file_name, now, len(rows)),
+            )
+            batch_id = batch_cursor.lastrowid
+            placeholders = _db_param_placeholder_count(len(ids))
+            conn.execute(
+                f"UPDATE tickets SET exported_at = ?, export_batch_id = ?, updated_at = ? WHERE id IN ({placeholders})",
+                [now, batch_id, now, *ids],
+            )
 
     return out_path
 
