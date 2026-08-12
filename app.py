@@ -63,13 +63,16 @@ def ensure_paths() -> None:
 def get_s3_client():
     if not bucket_enabled():
         return None
+    addressing_style = os.getenv("AWS_S3_URL_STYLE", "virtual").strip().lower()
+    if addressing_style not in {"virtual", "path"}:
+        addressing_style = "virtual"
     return boto3.client(
         "s3",
         endpoint_url=os.getenv("AWS_ENDPOINT_URL"),
         aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
         aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
         region_name=os.getenv("AWS_DEFAULT_REGION", "auto"),
-        config=boto3.session.Config(s3={"addressing_style": "virtual"}),
+        config=boto3.session.Config(s3={"addressing_style": addressing_style}),
     )
 
 
@@ -83,17 +86,34 @@ def upload_to_bucket(local_path: Path, prefix: str) -> Optional[str]:
     key = f"{prefix.rstrip('/')}/{dt.datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')}_{local_path.name}"
     try:
         s3.upload_file(str(local_path), bucket_name, key)
-        endpoint = os.getenv("AWS_ENDPOINT_URL", "").rstrip("/")
-        return f"{endpoint}/{bucket_name}/{key}"
+        return f"s3://{bucket_name}/{key}"
     except Exception as exc:
         logger.warning("bucket_upload_failed prefix=%s key=%s error=%s", prefix, key, exc)
         return None
 
 
-def persist_file(local_path: Path, prefix: str) -> Path:
+def persist_file(local_path: Path, prefix: str) -> str:
     if bucket_enabled():
-        upload_to_bucket(local_path, prefix)
-    return local_path
+        bucket_path = upload_to_bucket(local_path, prefix)
+        if bucket_path:
+            return bucket_path
+    return str(local_path)
+
+
+def load_stored_file(file_reference: str) -> Optional[bytes]:
+    if not file_reference.startswith("s3://"):
+        local_path = Path(file_reference)
+        return local_path.read_bytes() if local_path.exists() else None
+
+    bucket_name, _, key = file_reference.removeprefix("s3://").partition("/")
+    s3 = get_s3_client()
+    if not s3 or not bucket_name or not key:
+        return None
+    try:
+        return s3.get_object(Bucket=bucket_name, Key=key)["Body"].read()
+    except Exception as exc:
+        logger.warning("bucket_download_failed reference=%s error=%s", file_reference, exc)
+        return None
 
 
 def _dict_cursor(conn):
@@ -102,11 +122,31 @@ def _dict_cursor(conn):
     return conn
 
 
+class PostgresConnection:
+    def __init__(self, connection: Any):
+        self._connection = connection
+
+    def __enter__(self):
+        self._connection.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return self._connection.__exit__(exc_type, exc_value, traceback)
+
+    def cursor(self, *args, **kwargs):
+        return self._connection.cursor(*args, **kwargs)
+
+    def execute(self, query: str, parameters: Any = None):
+        cursor = self._connection.cursor()
+        cursor.execute(query.replace("?", "%s"), parameters)
+        return cursor
+
+
 def get_conn() -> Any:
     if postgres_enabled():
         conn = psycopg2.connect(os.getenv("DATABASE_URL"), sslmode="require")
         conn.autocommit = False
-        return conn
+        return PostgresConnection(conn)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
@@ -666,10 +706,11 @@ def export_approved_to_csv() -> Optional[Path]:
                 """
                 INSERT INTO export_batches (file_name, exported_at, ticket_count)
                 VALUES (%s, %s, %s)
+                RETURNING id
                 """,
                 (file_name, now, len(rows)),
             )
-            batch_id = batch_cursor.lastrowid
+            batch_id = batch_cursor.fetchone()[0]
             conn.execute(
                 f"UPDATE tickets SET exported_at = %s, export_batch_id = %s, updated_at = %s WHERE id IN ({_db_param_placeholder_count(len(ids))})",
                 [now, batch_id, now, *ids],
@@ -805,7 +846,8 @@ def render_upload_tab() -> None:
                                     fields, confidence, provider_used = extract_ticket_data(page_img_path)
                                     raw_ocr_text = fields.pop("__raw_text", "")
                                     fields.pop("__ocr_warning", None)
-                                    insert_ticket(fields, confidence, str(page_img_path), provider_used, raw_ocr_text)
+                                    stored_page_reference = persist_file(page_img_path, "uploads")
+                                    insert_ticket(fields, confidence, stored_page_reference, provider_used, raw_ocr_text)
                                     pdf_pages_ingested += 1
                                     processed_count += 1
                         if pdf_pages_ingested > 0:
@@ -828,7 +870,8 @@ def render_upload_tab() -> None:
                     logger.warning("upload_ocr_warning file=%s warning=%s", file.name, warning_msg)
                     st.warning(f"{file.name}: {warning_msg}")
 
-                insert_ticket(fields, confidence, str(file_path), provider_used, raw_ocr_text)
+                stored_file_reference = persist_file(file_path, "uploads")
+                insert_ticket(fields, confidence, stored_file_reference, provider_used, raw_ocr_text)
                 processed_count += 1
             except Exception as exc:
                 logger.exception("upload_processing_failed file=%s error=%s", file.name, exc)
@@ -939,11 +982,11 @@ def render_review_tab() -> None:
     edited: Dict[str, str] = {}
 
     with img_col:
-        img_path = Path(row["image_path"])
-        if img_path.exists():
-            st.image(str(img_path), use_column_width=True)
+        image_bytes = load_stored_file(row["image_path"])
+        if image_bytes:
+            st.image(image_bytes, use_column_width=True)
         else:
-            st.warning("Image file not found on disk.")
+            st.warning("Ticket image could not be loaded from storage.")
 
         # Raw OCR text viewer (collapsible)
         raw_text = row["raw_ocr_text"] if "raw_ocr_text" in row.keys() else ""
@@ -1087,11 +1130,11 @@ def render_history_tab() -> None:
 
     image_col, details_col = st.columns([1, 1])
     with image_col:
-        image_path = Path(row["image_path"])
-        if image_path.exists():
-            st.image(str(image_path), use_column_width=True)
+        image_bytes = load_stored_file(row["image_path"])
+        if image_bytes:
+            st.image(image_bytes, use_column_width=True)
         else:
-            st.warning("Image file not found on disk.")
+            st.warning("Ticket image could not be loaded from storage.")
     with details_col:
         st.caption(f"Status: {row['review_status']} | Exported: {row['exported_at'] or 'No'}")
         st.dataframe(
