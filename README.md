@@ -45,7 +45,7 @@ The production service requires:
 
 - `DATABASE_URL` referencing the Railway Postgres private URL
 - `AWS_ENDPOINT_URL`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_S3_BUCKET_NAME`, and `AWS_DEFAULT_REGION` from the Railway bucket
-- `PORT=8089`, matching the service's Railway domain target port
+- Railway's assigned `PORT`; do not set a fixed `PORT` unless the service's domain target port has been changed to match it
 
 The live application is available at <https://nc-ticket-reader-production.up.railway.app/>.
 
