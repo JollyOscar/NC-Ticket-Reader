@@ -1,0 +1,320 @@
+======================================================================
+FILE: pdf_ticket_p1_Im1.jpg | provider=google_vision | conf=0.96
+  Ticket No : 7075
+  Date      : 2026-05-03
+  Job No    : 
+  Quarry    : Seabrook
+  Customer  : C DA
+  Deliver To: 
+  Material  : 
+  Gross     : 26671
+  Tare      : 25361
+  Net       : 1310
+  Trucker   : 
+  Plate     : CDA
+  Recv By   : SEABROOK 902-245-6386 P.O. CONSTRUCTION
+
+  --- RAW TEXT ---
+DATE
+NOVA CONSTRUCTION COMPANY LTD
+P.O. Box 1328
+Antigonish, NS
+B2G 2L7
+Phone: 902-245-6386 Fax: 902-245-5132
+5088
+LICENSE PLATE
+TRUCKER
+SOLD TO/
+CHARGED TO
+DA
+DELIVER TO
+MATERIAL
+C
+GROSS
+TARE
+NET
+1310
+26671
+C
+JOB NO.
+SEABROOK QUARRY
+ENTERED MAY 3 7075
+RECEIVED BY
+WHITE CUSTOMER COPY
+CANARY TRUCKER'S COPY
+PINK-OFFICE COPY
+
+======================================================================
+FILE: pdf_ticket_p2_Im2.jpg | provider=google_vision | conf=0.9
+  Ticket No : 241260
+  Date      : 2026-04-16
+  Job No    : 
+  Quarry    : Desmond
+  Customer  : 
+  Deliver To: Premy April16
+  Material  : TO April16
+  Gross     : 34900
+  Tare      : 20610
+  Net       : 14290
+  Trucker   : Premy April16
+  Plate     : 
+  Recv By   : 14290 34900 Premy 
+
+  --- RAW TEXT ---
+DATE
+NOVA CONSTRUCTION COMPANY LTD
+P.O. Box 1328
+Antigonish, NS
+B2G 2L7
+Phone: 902-245-6386 Fax: 902-245-5132
+April16/26/JOB NO.
+JOB NO. 241260.
+DESMOND QUARRY
+LICENSE PLATE 58505
+TRUCKER
+SOLD TO/
+Premy Wood Blain
+Ma
+CHARGED TO Municipal Windmill
+DELIVER TO
+Weavers Mut
+MATERIAL
+GROSS
+34900
+TARE
+20610
+NET
+0561
+14290
+RECEIVED BY
+WHITE CUSTOMER COPY
+CANARY-TRUCKER'S COPY
+PINK-OFFICE COPY
+
+======================================================================
+FILE: pdf_ticket_p3_Im3.jpg | provider=google_vision | conf=0.93
+  Ticket No : 07235
+  Date      : 
+  Job No    : 
+  Quarry    : Long Point
+  Customer  : DATE
+  Deliver To: 14.450 Day
+  Material  : TO TO / TO DATE
+  Gross     : 10900
+  Tare      : 8974
+  Net       : 1926
+  Trucker   : 14.450 Type Day
+  Plate     : 14450TYPEDAY
+  Recv By   : 25.350 Doherty LONG 
+
+  --- RAW TEXT ---
+DATE
+NOVA CONSTRUCTION COMPANY LTD
+P.O. Box 1328
+Antigonish, NS
+B2G 2L7
+Phone: 902-245-6386 Fax: 902-245-5132
+Day 1926
+LICENSE PLATE
+TRUCKER
+SOLD TO/
+CHARGED TO
+DELIVER TO
+MATERIAL
+GROSS
+TARE
+NET
+JOB NO.
+LONG POINT QUARRY
+Lime
+Lime
+Doherty
+Dotorty
+Type 1
+25.350
+10900
+14.450
+07235
+WHITE CUSTOMER COPY
+-
+RECEIVED BY
+Ty
+spd
+spd
+CANARY TRUCKER'S COPY
+PINK-OFFICE COPY
+
+======================================================================
+FILE: pdf_ticket_p4_Im4.jpg | provider=google_vision | conf=0.93
+  Ticket No : 07131
+  Date      : 2026-05-08
+  Job No    : 
+  Quarry    : Long Point
+  Customer  : 
+  Deliver To: 
+  Material  : TO TO / TO May DATE
+  Gross     : 2026
+  Tare      : 
+  Net       : 7131
+  Trucker   : TO TO / May DATE
+  Plate     : 
+  Recv By   : Chipman LONG 2026 
+
+  --- RAW TEXT ---
+DATE
+NOVA CONSTRUCTION COMPANY LTD
+P.O. Box 1328
+Antigonish, NS
+B2G 2L7
+Phone: 902-245-6386 Fax: 902-245-5132
+May 8 2026
+LICENSE PLATE
+JOB NO.
+LONG POINT QUARRY
+TRUCKER
+SOLD TO/
+CHARGED TO
+DELIVER TO
+Chipman Tructing
+MATERIAL
+GROSS
+TARE
+14,
+NET
+07131
+WHITE CUSTOMER COPY
+000
+Tonne
+RECEIVED BY
+Matt Lloyd
+CANARY TRUCKER'S COPY
+PINK OFFICE COPY
+
+======================================================================
+FILE: pdf_ticket_p5_Im5.jpg | provider=google_vision | conf=0.92
+  Ticket No : 07162
+  Date      : 2026-05-11
+  Job No    : 
+  Quarry    : Long Point
+  Customer  : 1680 Serge
+  Deliver To: Serge Alten
+  Material  : 14/320 TO TO / TO DATE
+  Gross     : 26000
+  Tare      : 24320
+  Net       : 1680
+  Trucker   : 1680 Serge Alten 11/26
+  Plate     : ALTEN1126
+  Recv By   : LONG 
+
+  --- RAW TEXT ---
+NOVA CONSTRUCTION COMPANY LTD
+P.O. Box 1328
+Antigonish, NS
+B2G 2L7
+Phone: 902-245-6386 Fax: 902-245-5132
+DATE May 11/26
+LICENSE PLATE
+TRUCKER
+SOLD TO/
+Alten
+JOB NO.
+LONG POINT QUARRY
+CHARGED TO Potterty Lime HD
+DELIVER TO
+MATERIAL Serge
+GROSS 26000
+TARE 1680
+NET
+14/320
+07162
+RECEIVED BY
+WHITE CUSTOMER COPY
+-
+CANARY TRUCKER'S COPY
+PINK-OFFICE COPY
+
+======================================================================
+FILE: pdf_ticket_p6_Im6.jpg | provider=google_vision | conf=0.92
+  Ticket No : 00534
+  Date      : 2026-06-01
+  Job No    : 
+  Quarry    : Long Point
+  Customer  : TO / June
+  Deliver To: TO / June
+  Material  : TO TO / TO DATE
+  Gross     : 15000
+  Tare      : 
+  Net       : 
+  Trucker   : TO TO / DATE
+  Plate     : BACKCRD1
+  Recv By   : Rock LONG 26 902-245-6386
+
+  --- RAW TEXT ---
+NOVA CONSTRUCTION COMPANY LTD
+P.O. Box 1328
+Antigonish, NS
+B2G 2L7
+Phone: 902-245-6386 Fax: 902-245-5132
+DATE June 1
+26
+JOB NO.
+LICENSE PLATE
+LONG POINT QUARRY
+TRUCKER
+SOLD TO/
+CHARGED TO CRD
+DELIVER TO
+MATERIAL
+GROSS
+Back Rock
+TARE
+15 T
+NET
+00534
+RECEIVED BY
+нил
+WHITE CUSTOMER COPY
+CANARY TRUCKER'S COPY
+PINK-OFFICE COPY
+
+======================================================================
+FILE: pdf_ticket_p7_Im7.jpg | provider=google_vision | conf=0.98
+  Ticket No : 06738
+  Date      : 
+  Job No    : 
+  Quarry    : Long Point
+  Customer  : 15
+  Deliver To: 15
+  Material  : TO TO / TO DATE
+  Gross     : 
+  Tare      : 
+  Net       : 6738
+  Trucker   : TO TO / DATE
+  Plate     : 
+  Recv By   : LONG 
+
+  --- RAW TEXT ---
+DATE
+NOVA CONSTRUCTION COMPANY LT
+P.O. Box 1328
+Antigonish, NS
+B2G 2L7
+Phone: 902-245-6386 Fax: 902-245-5132
+JOB NO.
+LICENSE PLATE
+LONG POINT QUARRY
+TRUCKER
+SOLD TO/
+CHARGED TO
+DELIVER TO
+MATERIAL
+GROSS
+15
+TARE
+NET
+06738
+RECEIVED BY
+WHITE CUSTOMER COPY
+CANARY TRUCKER'S COPY
+PINK OFFICE COPY
+

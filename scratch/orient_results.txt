@@ -1,0 +1,91 @@
+﻿.venv\Scripts\python.exe : E:\Projects\Nova Construction Ticket 
+App\.venv\lib\site-packages\google\api_core\_python_version_support.py:255: FutureWarning: You are using a Python 
+version (3.10.11) which Google will stop supporting in new releases of google.api_core once it reaches its end of life 
+(2026-10-04). Please upgrade to the latest Python version, or at least Python 3.11, to continue receiving updates for 
+google.api_core past that date.
+At line:1 char:93
++ ... TTP_PROXY); .venv\Scripts\python.exe scratch\diagnose_orientation.py  ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (E:\Projects\Nov...past that date.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  warnings.warn(message, FutureWarning)
+Extracted 7 fresh images from PDF
+
+=== fresh_p1.jpg (2552x1650) ===
+  Full text bounding poly vertices:
+    v0: (973, 38)
+    v1: (2481, 38)
+    v2: (2481, 1167)
+    v3: (973, 1167)
+  Text top-edge vector: dx=1508, dy=0
+  Text orientation angle: 0.0░
+  -> Text is UPRIGHT, no rotation needed
+  OCR result: ticket=2075, date=2075-05-03, quarry=Seabrook, gross=26671, tare=, net=26671
+
+=== fresh_p2.jpg (2552x1650) ===
+  Full text bounding poly vertices:
+    v0: (960, 6)
+    v1: (2517, 6)
+    v2: (2517, 1243)
+    v3: (960, 1243)
+  Text top-edge vector: dx=1557, dy=0
+  Text orientation angle: 0.0░
+  -> Text is UPRIGHT, no rotation needed
+  OCR result: ticket=241260, date=2016-04-01, quarry=Desmond, gross=34900, tare=14290, net=20610
+
+=== fresh_p3.jpg (2552x1650) ===
+  Full text bounding poly vertices:
+    v0: (943, 8)
+    v1: (2494, 8)
+    v2: (2494, 1222)
+    v3: (943, 1222)
+  Text top-edge vector: dx=1551, dy=0
+  Text orientation angle: 0.0░
+  -> Text is UPRIGHT, no rotation needed
+  OCR result: ticket=07235, date=, quarry=Long Point, gross=10900, tare=9572, net=1328
+
+=== fresh_p4.jpg (2552x1650) ===
+  Full text bounding poly vertices:
+    v0: (955, 22)
+    v1: (2485, 22)
+    v2: (2485, 1152)
+    v3: (955, 1152)
+  Text top-edge vector: dx=1530, dy=0
+  Text orientation angle: 0.0░
+  -> Text is UPRIGHT, no rotation needed
+  OCR result: ticket=07131, date=2026-05-08, quarry=Long Point, gross=, tare=, net=
+
+=== fresh_p5.jpg (2552x1650) ===
+  Full text bounding poly vertices:
+    v0: (950, 15)
+    v1: (2493, 15)
+    v2: (2493, 1141)
+    v3: (950, 1141)
+  Text top-edge vector: dx=1543, dy=0
+  Text orientation angle: 0.0░
+  -> Text is UPRIGHT, no rotation needed
+  OCR result: ticket=07162, date=2026-05-11, quarry=Long Point, gross=26000, tare=11680, net=4320
+
+=== fresh_p6.jpg (2552x1650) ===
+  Full text bounding poly vertices:
+    v0: (965, 47)
+    v1: (2488, 47)
+    v2: (2488, 1174)
+    v3: (965, 1174)
+  Text top-edge vector: dx=1523, dy=0
+  Text orientation angle: 0.0░
+  -> Text is UPRIGHT, no rotation needed
+  OCR result: ticket=00534, date=2026-06-26, quarry=Long Point, gross=15000, tare=, net=
+
+=== fresh_p7.jpg (2552x1650) ===
+  Full text bounding poly vertices:
+    v0: (946, 26)
+    v1: (2482, 26)
+    v2: (2482, 1154)
+    v3: (946, 1154)
+  Text top-edge vector: dx=1536, dy=0
+  Text orientation angle: 0.0░
+  -> Text is UPRIGHT, no rotation needed
+  OCR result: ticket=06738, date=, quarry=Long Point, gross=, tare=, net=
+

@@ -1,0 +1,30 @@
+﻿.venv\Scripts\python.exe : E:\Projects\Nova Construction Ticket 
+App\.venv\lib\site-packages\google\api_core\_python_version_support.py:255: FutureWarning: You are using a Python 
+version (3.10.11) which Google will stop supporting in new releases of google.api_core once it reaches its end of life 
+(2026-10-04). Please upgrade to the latest Python version, or at least Python 3.11, to continue receiving updates for 
+google.api_core past that date.
+At line:1 char:93
++ ... TTP_PROXY); .venv\Scripts\python.exe scratch\test_e2e_orient.py 2>&1  ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (E:\Projects\Nov...past that date.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  warnings.warn(message, FutureWarning)
+
+BEFORE: test_orient_copy.jpg size=1650x2552
+urllib3.connectionpool DEBUG Starting new HTTPS connection (1): oauth2.googleapis.com:443
+urllib3.connectionpool DEBUG https://oauth2.googleapis.com:443 "POST /token HTTP/1.1" 200 None
+
+AFTER:  test_orient_copy.jpg size=1650x2552
+Image was NOT rotated
+
+Extracted fields:
+  ticket_id: 26671
+  ticket_date: 2025-05-03
+  quarry_name: Seabrook
+  gross_weight: 5088
+  tare_weight: 3778
+  net_weight: 1310
+  source_site: Seabrook
+
+Confidence: 0.96, Provider: google_vision
