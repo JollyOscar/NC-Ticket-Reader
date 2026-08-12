@@ -1,65 +1,80 @@
-# Nova Construction — Ticket Processing App
+# Nova Construction Ticket App
 
-An easy-to-use application designed for Nova Construction office staff to digitise, review, and export quarry stone load tickets.
+A lightweight web app for reviewing, approving, and exporting quarry ticket data from uploaded ticket images and PDFs.
 
----
+## Overview
 
-## 🚀 How to Start the App (1 Click)
+This project is built for office staff to:
+- upload ticket images or PDFs,
+- run OCR extraction,
+- review fields before approval,
+- export approved tickets to CSV for downstream invoice workflows.
 
-Double-click **`Launch Nova Ticket App.bat`** in this folder.
+The public-facing demo mode is intentionally safe and low-cost by default, using local OCR. The Google Vision path remains available as an explicit production option for higher-accuracy processing.
 
-The app will launch automatically in your web browser at:  
-👉 **[http://localhost:8501](http://localhost:8501)**
+## Repository structure
 
----
-
-## 📋 What This App Does
-
-1. **Upload Ticket Photos**: Drag & drop batch photos or scans of quarry tickets.
-2. **Automated Reading (OCR)**: Google Vision OCR automatically reads key ticket information (Date, Ticket #, Customer, Quarry, Material, Weights, Trucker).
-3. **Review & Confirm**: Office staff compare the scanned ticket side-by-side with the digital form, verifying that Gross − Tare = Net.
-4. **Approve & Export**: One click exports approved tickets directly into CSV spreadsheets ready for invoicing.
-
----
-
-## 📁 Repository Guide (Easy Navigation)
-
-```
+```text
 Nova Construction Ticket App/
-├── Launch Nova Ticket App.bat   ← Double-click to run the app!
-├── app.py                       ← Main web application interface
-├── ocr.py                       ← OCR scanning engine (Google Vision)
-├── backend_logging.py           ← Activity and system logger
-├── run.bat                      ← App startup script
-├── requirements.txt             ← Application dependencies
-│
-├── data/                        ← Storage for tickets and exports
-│   ├── prototype.db             ← Ticket database
-│   ├── uploads/                 ← Uploaded ticket images
-│   ├── exports/                 ← Downloaded CSV export files
-│   └── logs/                    ← System log files
-│
-├── docs/                        ← Documentation & Client Information
-│   ├── v1-implementation-checklist.md
+├── app.py                       # Streamlit app and ticket workflow
+├── backend_logging.py           # Logging utilities
+├── ocr.py                       # OCR extraction and normalization logic
+├── Dockerfile                   # Railway/container setup
+├── railway.json                 # Railway deployment config
+├── requirements.txt             # Python dependencies
+├── .env.example                 # Environment variable template
+├── .gitignore                   # Repo hygiene rules
+├── README.md                    # Project overview and instructions
+├── Launch Nova Ticket App.bat    # Local Windows shortcut for app startup
+├── run.bat                      # Local app launcher
+├── run_public_demo.bat          # Demo-safe OCR startup script
+├── run_google_release.bat       # Google Vision startup script
+├──
+├── data/                        # Runtime storage (kept as folders, not committed sample data)
+│   ├── uploads/.gitkeep
+│   ├── exports/.gitkeep
+│   ├── logs/.gitkeep
+│   └── .gitkeep
+├── docs/                        # Client research, proposal, and implementation notes
+│   ├── client_research/
+│   ├── google-form-generator.gs
+│   ├── google-form-generator-v2.gs
+│   ├── google-form-quick-setup.md
 │   ├── uncle-clarification-question-list.md
-│   └── client_research/         ← Client background notes and sample ticket images
-│
-├── scripts/                     ├── Helper scripts
-│   ├── run_ticket_demo.py       ← Run an end-to-end automated demo
-│   ├── clean_test_data.py       ← Utility to clear test records
-│   └── verify_no_hardcoded.py   ← Automated system test
-│
-└── .venv/                       ← Application environment
+│   └── v1-implementation-checklist.md
+├── scripts/                     # Operational/helper scripts
+│   ├── clean_test_data.py
+│   ├── run_ticket_demo.py
+│   └── verify_no_hardcoded.py
+├── tests/                       # Regression checks
+│   └── test_ocr_default_provider.py
+└── .venv/                       # Local virtual environment (not committed)
 ```
 
----
+## Local startup
 
-## ⚙️ OCR Settings
+On Windows, run:
 
-- **Google Vision (Recommended)**: High accuracy (~90-95% confidence) with handwriting support.
-- **Tesseract (Local Fallback)**: Runs offline if Google Cloud is disconnected.
+```bat
+Launch Nova Ticket App.bat
+```
 
----
+or from a terminal:
 
-## ❓ Need Help?
-Contact Nova Construction IT support or refer to the guides in the `docs/` folder.
+```bat
+python -m streamlit run app.py
+```
+
+## Environment notes
+
+Use the .env template to configure deployed or demo settings. The app defaults to a safe local OCR mode unless a paid OCR provider is explicitly enabled.
+
+## Production notes
+
+- Public/demo mode: Tesseract via local OCR
+- Production override: `OCR_PROVIDER=google_vision`
+- Railway: container deploys from this repo and reads environment variables for cloud services when configured
+
+## Clean repo policy
+
+The project intentionally excludes generated caches, temp debug artifacts, uploaded ticket files, exported CSVs, and secrets from source control. Runtime folders remain in place but are empty unless the app is actively processing data.

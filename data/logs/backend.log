@@ -3574,3 +3574,4 @@ AttributeError: 'str' object has no attribute 'read_bytes'
 2026-08-12 19:03:57,185 | INFO | office_ticket_backend.ocr | ocr_extract_provider_selected image=dummy.png provider=pytesseract confidence=0.00
 2026-08-12 19:19:21,547 | INFO | office_ticket_backend.ocr | ocr_extract_start image=dummy.png provider_env=pytesseract
 2026-08-12 19:19:21,547 | INFO | office_ticket_backend.ocr | ocr_extract_provider_selected image=dummy.png provider=pytesseract confidence=0.00
+2026-08-12 19:19:44,650 | INFO | office_ticket_backend.app | ticket_inserted ticket_id=T-100 provider=pytesseract confidence=0.92 image=data/uploads/test.jpg

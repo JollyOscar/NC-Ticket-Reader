@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.venv/
+venv/
+
+# Runtime config
+.env
+.env.*
+.streamlit/
+
+# Runtime data
+/data/uploads/*
+!/data/uploads/.gitkeep
+/data/exports/*
+!/data/exports/.gitkeep
+/data/logs/*
+!/data/logs/.gitkeep
+/data/*.db
+/data/*.sqlite3
+
+# Secrets and local credentials
+**/client_secret.txt
+**/*.pem
+**/*.key
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Keep folder structure only
+!.gitkeep

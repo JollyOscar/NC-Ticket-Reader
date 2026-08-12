@@ -96,6 +96,12 @@ def persist_file(local_path: Path, prefix: str) -> Path:
     return local_path
 
 
+def _dict_cursor(conn):
+    if postgres_enabled():
+        return conn.cursor(cursor_factory=RealDictCursor)
+    return conn
+
+
 def get_conn() -> Any:
     if postgres_enabled():
         conn = psycopg2.connect(os.getenv("DATABASE_URL"), sslmode="require")
@@ -224,11 +230,22 @@ def init_db() -> None:
 
 def fetch_export_batches() -> List[sqlite3.Row]:
     with get_conn() as conn:
+        if postgres_enabled():
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("SELECT * FROM export_batches ORDER BY id DESC")
+            return cursor.fetchall()
         return conn.execute("SELECT * FROM export_batches ORDER BY id DESC").fetchall()
 
 
 def fetch_export_batch_tickets(batch_id: int) -> List[sqlite3.Row]:
     with get_conn() as conn:
+        if postgres_enabled():
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute(
+                "SELECT * FROM tickets WHERE export_batch_id = %s ORDER BY id ASC",
+                (batch_id,),
+            )
+            return cursor.fetchall()
         return conn.execute(
             "SELECT * FROM tickets WHERE export_batch_id = ? ORDER BY id ASC", (batch_id,)
         ).fetchall()
@@ -379,10 +396,22 @@ def insert_ticket(fields: Dict[str, str], confidence_score: float, image_path: s
 def fetch_tickets(statuses: Optional[List[str]] = None) -> List[sqlite3.Row]:
     with get_conn() as conn:
         if not statuses:
+            if postgres_enabled():
+                cursor = conn.cursor(cursor_factory=RealDictCursor)
+                cursor.execute("SELECT * FROM tickets ORDER BY id DESC")
+                return cursor.fetchall()
             cursor = conn.execute("SELECT * FROM tickets ORDER BY id DESC")
             return cursor.fetchall()
 
         placeholders = _db_param_placeholder_count(len(statuses))
+        if postgres_enabled():
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute(
+                f"SELECT * FROM tickets WHERE review_status IN ({placeholders}) ORDER BY id DESC",
+                statuses,
+            )
+            return cursor.fetchall()
+
         cursor = conn.execute(
             f"SELECT * FROM tickets WHERE review_status IN ({placeholders}) ORDER BY id DESC",
             statuses,
@@ -393,8 +422,13 @@ def fetch_tickets(statuses: Optional[List[str]] = None) -> List[sqlite3.Row]:
 def fetch_ticket(ticket_row_id: int) -> Optional[sqlite3.Row]:
     with get_conn() as conn:
         l = (ticket_row_id,)
-        cursor = conn.execute("SELECT * FROM tickets WHERE id = %s" if postgres_enabled() else "SELECT * FROM tickets WHERE id = ?", l)
-        row = cursor.fetchone()
+        if postgres_enabled():
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("SELECT * FROM tickets WHERE id = %s", l)
+            row = cursor.fetchone()
+        else:
+            cursor = conn.execute("SELECT * FROM tickets WHERE id = ?", l)
+            row = cursor.fetchone()
     return row
 
 
@@ -404,7 +438,8 @@ def ticket_exists(ticket_id: str, ticket_date: str, exclude_id: int) -> bool:
 
     with get_conn() as conn:
         if postgres_enabled():
-            cursor = conn.execute(
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute(
                 """
                 SELECT COUNT(*) AS cnt
                 FROM tickets
