@@ -37,3 +37,28 @@ def test_configure_tesseract_uses_system_binary_on_linux(monkeypatch):
 
     assert captured["which"] == "tesseract"
     assert result == "/usr/bin/tesseract"
+
+
+def test_extract_quarry_name_uses_form_text_without_embedded_names():
+    assert ocr._extract_quarry_name("SAMPLE MATERIAL QUARRY\n") == "Sample Material"
+
+
+def test_sanitize_untrusted_fields_rejects_header_and_identifier_bleed():
+    parsed = {
+        "ticket_id": "12345",
+        "job_no": "Sample Quarry",
+        "received_by": "12345",
+        "deliver_to": "42",
+        "sold_to": "Valid Customer",
+        "trucker": "A#",
+        "material_type": "Road Base",
+    }
+
+    ocr._sanitize_untrusted_fields(parsed)
+
+    assert parsed["job_no"] == ""
+    assert parsed["received_by"] == ""
+    assert parsed["deliver_to"] == ""
+    assert parsed["trucker"] == ""
+    assert parsed["sold_to"] == "Valid Customer"
+    assert parsed["material_type"] == "Road Base"

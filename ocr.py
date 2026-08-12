@@ -161,6 +161,30 @@ def _build_word_index(response: Any) -> List[Dict]:
     return words
 
 
+def _build_tesseract_word_index(data: Dict[str, List[Any]], image_size: Tuple[int, int]) -> List[Dict]:
+    image_width, image_height = image_size
+    words: List[Dict] = []
+    for index, text in enumerate(data.get("text", [])):
+        text = str(text).strip()
+        if not text:
+            continue
+        left = int(data["left"][index])
+        top = int(data["top"][index])
+        width = max(int(data["width"][index]), 1)
+        height = max(int(data["height"][index]), 1)
+        words.append({
+            "text": text,
+            "cx": (left + width / 2) / max(image_width, 1),
+            "cy": (top + height / 2) / max(image_height, 1),
+            "x0": left / max(image_width, 1),
+            "x1": (left + width) / max(image_width, 1),
+            "y0": top / max(image_height, 1),
+            "y1": (top + height) / max(image_height, 1),
+            "wh": max(height / max(image_height, 1), 0.005),
+        })
+    return words
+
+
 def _spatial_find_label(words: List[Dict], *parts: str) -> Optional[Dict]:
     """
     Locate a (possibly multi-word) label by matching consecutive words.
@@ -509,34 +533,31 @@ def _spatial_find_ticket_id(words: List[Dict], lbl_recv: Optional[Dict]) -> str:
     return candidates[0]["text"].strip(".")
 
 
-_KNOWN_QUARRIES = [
-    "PLEASANT VALLEY",
-    "LONG POINT",
-    "SEABROOK",
-    "SHELBURNE",
-    "BRIERLY BROOK",
-    "DESMOND",
-    "COCHRANE HILL",
-    "MIDDLEWOOD",
-    "WESTCHESTER",
-    "LARRY J BECK",
-]
+def _extract_quarry_name(text: str) -> str:
+    for line in text.splitlines():
+        if not re.search(r"\bquarry\b", line, re.IGNORECASE):
+            continue
+        value = re.sub(r"\bquarry\b", "", line, flags=re.IGNORECASE)
+        value = _clean_candidate(value)
+        if _is_useful_value(value):
+            return value.title()
+    return ""
 
 
 def parse_ticket_text(raw_text: str) -> Dict[str, str]:
     text = raw_text or ""
 
-    quarry_name = ""
-    for quarry in _KNOWN_QUARRIES:
-        if quarry.lower() in text.lower():
-            quarry_name = quarry.title()
-            break
+    quarry_name = _extract_quarry_name(text)
 
     # Use whole-text date search first; label-line OCR can be merged/noisy.
     ticket_date = _normalize_date(text) or _normalize_date(_extract_line(text, "Date"))
     ticket_id = _extract_ticket_number(text)
 
     gross, tare, net = _extract_weights_structured(text)
+    if ticket_id:
+        gross = "" if gross == ticket_id else gross
+        tare = "" if tare == ticket_id else tare
+        net = "" if net == ticket_id else net
 
     truck_or_plate = _extract_between_labels(
         text,
@@ -818,11 +839,7 @@ def _extract_with_google_vision(image_path: Path) -> Tuple[Dict[str, str], float
         return g_out, t_out, n_out
 
     gross, tare, net = _solve_weights(raw_text, ticket_id)
-    quarry_name = ""
-    for quarry in _KNOWN_QUARRIES:
-        if quarry.lower() in raw_text.lower():
-            quarry_name = quarry.title()
-            break
+    quarry_name = _extract_quarry_name(raw_text)
 
     # ── Date normalisation ─────────────────────────────────────────────────────
     # Try spatial result first, then scan entire raw text as fallback
@@ -882,10 +899,8 @@ def _extract_with_google_vision(image_path: Path) -> Tuple[Dict[str, str], float
             r"\b(?:rd|road|st|street|ave|avenue|dr|drive|rr|route|hwy|lane|#|\d)",
             deliver_to, re.IGNORECASE
         ))
-        is_quarry_name = any(
-            q.lower() in deliver_to.lower() for q in _KNOWN_QUARRIES
-        ) and not has_addr
-        if is_quarry_name:
+        has_quarry_marker = bool(re.search(r"\bquarry\b", deliver_to, re.IGNORECASE))
+        if has_quarry_marker and not has_addr:
             deliver_to = ""
         # Strip bare directional residue with no address content
         # "Point Rd " passes (has "rd") — keep it
@@ -982,28 +997,87 @@ def _configure_tesseract_cmd() -> Optional[str]:
 
 
 def _preprocess_for_ocr(img: Any) -> Any:
-    """Normalise image size and contrast for better Tesseract accuracy."""
-    from PIL import Image as PilImage, ImageEnhance, ImageFilter
+    """Normalize ticket images without relying on document-specific content."""
+    from PIL import Image as PilImage, ImageEnhance, ImageFilter, ImageOps
 
-    img = img.convert("L")  # grayscale
+    img = ImageOps.exif_transpose(img).convert("L")
 
-    # Downscale only — large phone photos have more noise than Tesseract can handle,
-    # but upscaling small images blurs text and can cause labels to disappear.
-    MAX_LONG_SIDE = 2000
+    max_long_side = 3200
+    min_short_side = 1400
     w, h = img.size
     long_side = max(w, h)
-    if long_side > MAX_LONG_SIDE:
-        scale = MAX_LONG_SIDE / long_side
+    short_side = min(w, h)
+    if long_side > max_long_side:
+        scale = max_long_side / long_side
+        resample = getattr(PilImage, "LANCZOS", 3)
+        img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), resample)
+    elif short_side < min_short_side:
+        scale = min_short_side / short_side
         resample = getattr(PilImage, "LANCZOS", 3)
         img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), resample)
 
-    # Boost contrast so ink stands out from paper
-    img = ImageEnhance.Contrast(img).enhance(1.5)
-
-    # Sharpen to help edge detection on printed labels
-    img = img.filter(ImageFilter.SHARPEN)
+    img = ImageOps.autocontrast(img, cutoff=1)
+    img = ImageEnhance.Contrast(img).enhance(1.8)
+    img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=160, threshold=3))
 
     return img
+
+
+def _parsed_field_score(parsed: Dict[str, str]) -> int:
+    fields = (
+        "ticket_id", "ticket_date", "job_no", "quarry_name", "truck_or_plate",
+        "trucker", "sold_to", "deliver_to", "material_type", "received_by",
+        "gross_weight", "tare_weight", "net_weight",
+    )
+    score = sum(bool(str(parsed.get(field, "")).strip()) for field in fields)
+    gross = parsed.get("gross_weight", "")
+    tare = parsed.get("tare_weight", "")
+    net = parsed.get("net_weight", "")
+    if gross.isdigit() and tare.isdigit() and net.isdigit() and int(gross) == int(tare) + int(net):
+        score += 3
+    return score
+
+
+def _extract_tesseract_spatial_fields(data: Dict[str, List[Any]], image_size: Tuple[int, int]) -> Dict[str, str]:
+    words = _build_tesseract_word_index(data, image_size)
+    labels = {
+        "job_no": _spatial_find_label_any(words, [["job", "no"], ["job", "no."]]),
+        "truck_or_plate": _spatial_find_label_any(words, [["license", "plate"], ["license"]]),
+        "trucker": _spatial_find_label_any(words, [["trucker"]]),
+        "sold_to": _spatial_find_label_any(words, [["sold", "to"], ["charged", "to"]]),
+        "deliver_to": _spatial_find_label_any(words, [["deliver", "to"]]),
+        "material_type": _spatial_find_label_any(words, [["material"]]),
+        "received_by": _spatial_find_label_any(words, [["received", "by"], ["recieved", "by"]]),
+    }
+    values = {
+        "job_no": _spatial_collect_value(words, labels["job_no"], [labels["truck_or_plate"], labels["trucker"]]),
+        "truck_or_plate": _spatial_collect_value(words, labels["truck_or_plate"], [labels["trucker"], labels["sold_to"]]),
+        "trucker": _spatial_collect_value(words, labels["trucker"], [labels["sold_to"], labels["deliver_to"]]),
+        "sold_to": _spatial_collect_value(words, labels["sold_to"], [labels["deliver_to"], labels["material_type"]]),
+        "deliver_to": _spatial_collect_value(words, labels["deliver_to"], [labels["material_type"]]),
+        "material_type": _spatial_collect_value(words, labels["material_type"]),
+        "received_by": _spatial_collect_value(words, labels["received_by"]),
+    }
+    if re.search(r"\b(?:quarry|copy)\b", values["job_no"], re.IGNORECASE):
+        values["job_no"] = ""
+    return values
+
+
+def _sanitize_untrusted_fields(parsed: Dict[str, str]) -> None:
+    job_no = parsed.get("job_no", "")
+    if re.search(r"\b(?:quarry|copy)\b", job_no, re.IGNORECASE):
+        parsed["job_no"] = ""
+
+    ticket_id = parsed.get("ticket_id", "")
+    if ticket_id and parsed.get("received_by", "") == ticket_id:
+        parsed["received_by"] = ""
+
+    for field in ("deliver_to", "sold_to", "trucker", "material_type"):
+        value = parsed.get(field, "")
+        letters = len(re.findall(r"[A-Za-z]", value))
+        symbols = len(re.findall(r"[^A-Za-z0-9\s.'-]", value))
+        if letters < 2 or symbols > max(2, len(value) // 4):
+            parsed[field] = ""
 
 
 def _extract_with_pytesseract(image_path: Path) -> Tuple[Dict[str, str], float]:
@@ -1016,23 +1090,39 @@ def _extract_with_pytesseract(image_path: Path) -> Tuple[Dict[str, str], float]:
         pytesseract.pytesseract.tesseract_cmd = configured_cmd
     img = _preprocess_for_ocr(PilImage.open(image_path))
 
-    # Get text output
-    raw_text = pytesseract.image_to_string(img, config="--psm 6 --oem 1")
+    primary_config = "--oem 1 --psm 11"
+    raw_text = pytesseract.image_to_string(img, config=primary_config)
+    parsed = parse_ticket_text(raw_text)
+    selected_config = primary_config
 
-    # Compute real confidence from per-word scores (0–100 scale → normalise to 0–1)
+    if _parsed_field_score(parsed) <= 2:
+        fallback_config = "--oem 1 --psm 6"
+        fallback_text = pytesseract.image_to_string(img, config=fallback_config)
+        fallback_parsed = parse_ticket_text(fallback_text)
+        if _parsed_field_score(fallback_parsed) > _parsed_field_score(parsed):
+            raw_text = fallback_text
+            parsed = fallback_parsed
+            selected_config = fallback_config
+
     try:
         data = pytesseract.image_to_data(
-            img, config="--psm 6 --oem 1",
+            img, config=selected_config,
             output_type=pytesseract.Output.DICT,
         )
-        confs = [c for c in data.get("conf", []) if isinstance(c, (int, float)) and c >= 0]
+        confs = [float(c) for c in data.get("conf", []) if str(c).replace(".", "", 1).isdigit() and float(c) >= 0]
         avg_conf = round(sum(confs) / (len(confs) * 100.0), 2) if confs else 0.0
+        spatial_fields = _extract_tesseract_spatial_fields(data, img.size)
+        for field, value in spatial_fields.items():
+            if value and not parsed.get(field):
+                parsed[field] = value
     except Exception:
         avg_conf = 0.0
 
-    parsed = parse_ticket_text(raw_text)
+    _sanitize_untrusted_fields(parsed)
+    parsed["source_site"] = parsed.get("quarry_name", "")
+    parsed["destination_site"] = parsed.get("deliver_to", "")
     parsed["__raw_text"] = raw_text
-    logger.info("pytesseract_request_success image=%s conf=%.2f", image_path, avg_conf)
+    logger.info("pytesseract_request_success image=%s config=%s conf=%.2f", image_path, selected_config, avg_conf)
     return parsed, avg_conf
 
 
