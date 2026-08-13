@@ -1228,7 +1228,26 @@ def render_review_tab() -> None:
             c1, c2 = st.columns(2)
             with c1:
                 edited["ticket_id"]   = st.text_input("Ticket No.", value=row["ticket_id"] or "")
-                edited["ticket_date"] = st.text_input("Date (YYYY-MM-DD)", value=row["ticket_date"] or "")
+                
+                raw_date_str = str(row["ticket_date"] or "").strip()
+                default_date = dt.date.today()
+                if raw_date_str:
+                    try:
+                        default_date = dt.date.fromisoformat(raw_date_str)
+                    except ValueError:
+                        for fmt in ("%Y/%m/%d", "%m/%d/%Y", "%d/%m/%Y", "%Y.%m.%d", "%d-%m-%Y", "%m-%d-%Y"):
+                            try:
+                                default_date = dt.datetime.strptime(raw_date_str, fmt).date()
+                                break
+                            except ValueError:
+                                pass
+                selected_date = st.date_input(
+                    "Ticket Date (MM/DD/YYYY)",
+                    value=default_date,
+                    format="MM/DD/YYYY",
+                    key=f"date_picker_{selected_id}",
+                )
+                edited["ticket_date"] = selected_date.isoformat() if selected_date else ""
                 edited["job_no"]      = st.text_input("Job No.", value=row["job_no"] or "")
             with c2:
                 captured_q = str(row["quarry_name"] or "").strip()
