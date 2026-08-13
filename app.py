@@ -1202,7 +1202,13 @@ def render_upload_tab() -> None:
                                 status_text.text(
                                     f"Scanning ticket page {page_idx+1} of {total_pages} from '{file.name}'..."
                                 )
-                                fields, confidence, provider_used = extract_ticket_data(page_img_path)
+                                # PDF batches need predictable per-page runtime. EasyOCR can
+                                # spend minutes on a difficult high-resolution scan and block
+                                # the whole Streamlit request; use the fast local engine here.
+                                fields, confidence, provider_used = extract_ticket_data(
+                                    page_img_path,
+                                    force_provider="pytesseract",
+                                )
                                 raw_ocr_text = fields.pop("__raw_text", "")
                                 fields.pop("__ocr_warning", None)
                                 stored_page_reference = persist_file(page_img_path, "uploads")

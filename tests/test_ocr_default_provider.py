@@ -38,6 +38,23 @@ def test_development_launcher_defaults_to_easyocr():
     assert 'set "OCR_PROVIDER=pytesseract"' not in contents
 
 
+def test_extract_ticket_data_honors_forced_pytesseract(monkeypatch):
+    captured = {}
+
+    def fake_easyocr(path: Path):
+        raise RuntimeError("EasyOCR should not run for a forced provider")
+
+    def fake_pytesseract(path: Path):
+        captured["used"] = "pytesseract"
+        return {"ticket_id": "", "__raw_text": ""}, 0.0
+
+    monkeypatch.setattr(ocr, "_extract_with_easyocr", fake_easyocr)
+    monkeypatch.setattr(ocr, "_extract_with_pytesseract", fake_pytesseract)
+
+    result = ocr.extract_ticket_data(Path("dummy.png"), force_provider="pytesseract")
+
+    assert result[2] == "pytesseract"
+    assert captured["used"] == "pytesseract"
 def test_configure_tesseract_uses_system_binary_on_linux(monkeypatch):
     captured = {}
 

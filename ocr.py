@@ -1352,7 +1352,7 @@ def extract_ticket_data(image_path: Path, force_provider: Optional[str] = None) 
     google_error = ""
     logger.info("ocr_extract_start image=%s provider_env=%s", image_path, provider or "<empty>")
 
-    if provider == "google_vision" or force_provider == "google_vision":
+    if provider == "google_vision":
         try:
             parsed, confidence = _extract_with_google_vision(image_path)
             logger.info("ocr_extract_provider_selected image=%s provider=google_vision confidence=%.2f", image_path, confidence)
@@ -1360,6 +1360,14 @@ def extract_ticket_data(image_path: Path, force_provider: Optional[str] = None) 
         except Exception as exc:
             google_error = f"{type(exc).__name__}: {exc}"
             logger.exception("ocr_extract_google_failed image=%s error=%s", image_path, google_error)
+
+    if provider == "pytesseract":
+        try:
+            parsed, confidence = _extract_with_pytesseract(image_path)
+            logger.info("ocr_extract_provider_selected image=%s provider=pytesseract confidence=%.2f", image_path, confidence)
+            return parsed, confidence, "pytesseract"
+        except Exception as exc:
+            logger.exception("ocr_extract_pytesseract_failed image=%s error=%s", image_path, exc)
 
     # Try EasyOCR first for free local deep-learning AI OCR
     try:
