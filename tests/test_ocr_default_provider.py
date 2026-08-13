@@ -5,7 +5,7 @@ from PIL import Image
 import ocr
 
 
-def test_extract_ticket_data_defaults_to_pytesseract(monkeypatch):
+def test_extract_ticket_data_defaults_to_easyocr(monkeypatch):
     monkeypatch.delenv("OCR_PROVIDER", raising=False)
 
     captured = {}
@@ -13,17 +13,29 @@ def test_extract_ticket_data_defaults_to_pytesseract(monkeypatch):
     def fake_google(path: Path):
         raise RuntimeError("google should not be used by default")
 
-    def fake_pytesseract(path: Path):
-        captured["used"] = "pytesseract"
+    def fake_easyocr(path: Path):
+        captured["used"] = "easyocr"
         return {"ticket_id": "", "__raw_text": ""}, 0.0
 
+    def fake_pytesseract(path: Path):
+        raise RuntimeError("pytesseract should not be used when EasyOCR succeeds")
+
     monkeypatch.setattr(ocr, "_extract_with_google_vision", fake_google)
+    monkeypatch.setattr(ocr, "_extract_with_easyocr", fake_easyocr)
     monkeypatch.setattr(ocr, "_extract_with_pytesseract", fake_pytesseract)
 
     result = ocr.extract_ticket_data(Path("dummy.png"))
 
-    assert result[2] == "pytesseract"
-    assert captured["used"] == "pytesseract"
+    assert result[2] == "easyocr"
+    assert captured["used"] == "easyocr"
+
+
+def test_development_launcher_defaults_to_easyocr():
+    launcher = Path(ocr.__file__).with_name("run.bat")
+    contents = launcher.read_text(encoding="utf-8")
+
+    assert 'set "OCR_PROVIDER=easyocr"' in contents
+    assert 'set "OCR_PROVIDER=pytesseract"' not in contents
 
 
 def test_configure_tesseract_uses_system_binary_on_linux(monkeypatch):

@@ -7,7 +7,7 @@ Web application for extracting, reviewing, approving, and exporting quarry-ticke
 - Streamlit application deployed on Railway
 - Railway Postgres for ticket records and export-batch history
 - Railway Bucket for ticket images and CSV exports
-- Tesseract OCR by default for low-cost client testing
+- EasyOCR by default for low-cost client testing, including handwriting-oriented recognition
 - Google Vision as an explicit production OCR option
 
 ## Client workflow
@@ -67,7 +67,7 @@ The live application is available at <https://nc-ticket-reader-production.up.rai
 
 ## OCR modes
 
-- Default: `pytesseract`, appropriate for public demos and manual review workflows
+- Default: `easyocr`, appropriate for public demos and manual review workflows; Tesseract remains an automatic local fallback
 - Production: `OCR_PROVIDER=google_vision`, requiring a configured Google service account and billing-enabled Vision project
 
 Both modes use the same field parsing and validation path. Google Vision is retained for the paid production release; it is never silently selected for the public demo.

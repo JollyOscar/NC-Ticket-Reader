@@ -28,7 +28,7 @@ if errorlevel 1 (
 	exit /b 1
 )
 
-if not defined OCR_PROVIDER set "OCR_PROVIDER=pytesseract"
+if not defined OCR_PROVIDER set "OCR_PROVIDER=easyocr"
 
 echo Launching app on http://localhost:8501 ...
 start "" "http://localhost:8501"

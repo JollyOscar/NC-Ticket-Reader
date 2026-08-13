@@ -127,7 +127,7 @@ def get_master_data_id_map() -> Dict[str, Dict[str, str]]:
 
 @st.cache_data(ttl=300)
 def match_master_entity(entity_type: str, raw_text: str) -> Tuple[str, str]:
-    """Fuzzy/token match raw text to canonical master data name and system ID."""
+    """Map OCR text to the closest canonical master-data option and its ID."""
     import difflib
 
     raw_str = str(raw_text or "").strip()
@@ -146,7 +146,9 @@ def match_master_entity(entity_type: str, raw_text: str) -> Tuple[str, str]:
         if canonical_name:
             return (canonical_name, direct_id)
 
-    # 2. Token / Substring / Fuzzy match
+    # 2. Compare against both visible dropdown names and their aliases. An
+    # alias often reflects the shorthand a driver writes on a ticket, so it
+    # provides a better OCR correction target than canonical names alone.
     if not canonical_names or len(norm_input) < 2:
         return (raw_str, direct_id)
 
@@ -154,30 +156,42 @@ def match_master_entity(entity_type: str, raw_text: str) -> Tuple[str, str]:
     best_score = 0.0
     best_sys_id = ""
 
+    candidate_names = {
+        normalized: id_map.get(system_id, "")
+        for normalized, system_id in lookups.get(entity_type, {}).items()
+        if id_map.get(system_id, "")
+    }
     for canonical_name in canonical_names:
-        sys_id = id_map.get(canonical_name) or lookup_system_id(entity_type, canonical_name, lookups)
-        norm_canonical = _normalize_lookup_value(canonical_name)
+        candidate_names.setdefault(
+            _normalize_lookup_value(canonical_name),
+            canonical_name,
+        )
 
-        if norm_input and norm_canonical.startswith(norm_input):
-            score = 0.85 + (len(norm_input) / float(len(norm_canonical)) * 0.1)
+    for normalized_candidate, canonical_name in candidate_names.items():
+        sys_id = lookup_system_id(entity_type, canonical_name, lookups)
+        if not sys_id:
+            continue
+
+        if normalized_candidate.startswith(norm_input):
+            score = 0.85 + (len(norm_input) / float(len(normalized_candidate)) * 0.1)
             if score > best_score:
                 best_score = score
                 best_candidate = canonical_name
                 best_sys_id = sys_id
-        elif norm_input and norm_input in norm_canonical:
-            score = 0.60 + (len(norm_input) / float(len(norm_canonical)) * 0.2)
+        elif norm_input in normalized_candidate:
+            score = 0.60 + (len(norm_input) / float(len(normalized_candidate)) * 0.2)
             if score > best_score:
                 best_score = score
                 best_candidate = canonical_name
                 best_sys_id = sys_id
 
-        ratio = difflib.SequenceMatcher(None, norm_input, norm_canonical).ratio()
+        ratio = difflib.SequenceMatcher(None, norm_input, normalized_candidate).ratio()
         if ratio > 0.65 and ratio > best_score:
             best_score = ratio
             best_candidate = canonical_name
             best_sys_id = sys_id
 
-    if best_candidate and best_score >= 0.50:
+    if best_candidate and best_score >= 0.70:
         return (best_candidate, best_sys_id)
 
     return (raw_str, direct_id)

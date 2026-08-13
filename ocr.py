@@ -185,6 +185,42 @@ def _build_tesseract_word_index(data: Dict[str, List[Any]], image_size: Tuple[in
     return words
 
 
+def _build_easyocr_word_index(results: List[Any], image_size: Tuple[int, int]) -> List[Dict]:
+    """Convert EasyOCR detections into word-sized normalized bounding boxes."""
+    image_width, image_height = image_size
+    words: List[Dict] = []
+    for bbox, detected_text, _confidence in results:
+        text = str(detected_text or "").strip()
+        if not text or not bbox:
+            continue
+        xs = [float(point[0]) for point in bbox]
+        ys = [float(point[1]) for point in bbox]
+        x0, x1 = min(xs), max(xs)
+        y0, y1 = min(ys), max(ys)
+        text_parts = text.split()
+        if not text_parts:
+            continue
+        total_chars = max(sum(len(part) for part in text_parts), 1)
+        cursor = x0
+        for index, part in enumerate(text_parts):
+            if index == len(text_parts) - 1:
+                part_x1 = x1
+            else:
+                part_x1 = cursor + (x1 - x0) * len(part) / total_chars
+            words.append({
+                "text": part,
+                "cx": (cursor + part_x1) / 2 / max(image_width, 1),
+                "cy": (y0 + y1) / 2 / max(image_height, 1),
+                "x0": cursor / max(image_width, 1),
+                "x1": part_x1 / max(image_width, 1),
+                "y0": y0 / max(image_height, 1),
+                "y1": y1 / max(image_height, 1),
+                "wh": max((y1 - y0) / max(image_height, 1), 0.005),
+            })
+            cursor = part_x1
+    return words
+
+
 def _spatial_find_label(words: List[Dict], *parts: str) -> Optional[Dict]:
     """
     Locate a (possibly multi-word) label by matching consecutive words.
@@ -1086,8 +1122,7 @@ def _persist_upright_image(image_path: Path, source_image: Any, angle: int) -> N
         upright.close()
 
 
-def _extract_tesseract_spatial_fields(data: Dict[str, List[Any]], image_size: Tuple[int, int]) -> Dict[str, str]:
-    words = _build_tesseract_word_index(data, image_size)
+def _extract_spatial_fields(words: List[Dict]) -> Dict[str, str]:
     labels = {
         "job_no": _spatial_find_label_any(words, [["job", "no"], ["job", "no."]]),
         "truck_or_plate": _spatial_find_label_any(words, [["license", "plate"], ["license"]]),
@@ -1109,6 +1144,10 @@ def _extract_tesseract_spatial_fields(data: Dict[str, List[Any]], image_size: Tu
     if re.search(r"\b(?:quarry|copy)\b", values["job_no"], re.IGNORECASE):
         values["job_no"] = ""
     return values
+
+
+def _extract_tesseract_spatial_fields(data: Dict[str, List[Any]], image_size: Tuple[int, int]) -> Dict[str, str]:
+    return _extract_spatial_fields(_build_tesseract_word_index(data, image_size))
 
 
 def _sanitize_untrusted_fields(parsed: Dict[str, str]) -> None:
@@ -1220,9 +1259,7 @@ def _extract_with_easyocr(image_path: Path) -> Tuple[Dict[str, str], float]:
     source_img.load()
     source_img = ImageOps.exif_transpose(source_img)
 
-    angles = [0]
-    if source_img.width > source_img.height * 1.2:
-        angles.append(270)
+    angles = (0, 90, 180, 270)
 
     best_candidate: Optional[Tuple[Dict[str, str], float, int, str, int]] = None
 
@@ -1240,12 +1277,26 @@ def _extract_with_easyocr(image_path: Path) -> Tuple[Dict[str, str], float]:
         img_bytes = img_byte_arr.getvalue()
 
         try:
-            results = reader.readtext(img_bytes, detail=1)
+            results = reader.readtext(
+                img_bytes,
+                detail=1,
+                paragraph=False,
+                canvas_size=2560,
+                mag_ratio=1.5,
+                contrast_ths=0.05,
+                adjust_contrast=0.7,
+            )
         except Exception as e_err:
             logger.warning("easyocr_angle_failed angle=%d error=%s", angle, e_err)
             continue
 
-        results = sorted(results, key=lambda item: item[0][0][1] if item[0] else 0)
+        results = sorted(
+            results,
+            key=lambda item: (
+                item[0][0][1] if item[0] else 0,
+                item[0][0][0] if item[0] else 0,
+            ),
+        )
         lines: List[str] = []
         conf_scores: List[float] = []
         for bbox, text, conf in results:
@@ -1256,6 +1307,10 @@ def _extract_with_easyocr(image_path: Path) -> Tuple[Dict[str, str], float]:
 
         raw_text = "\n".join(lines)
         parsed = parse_ticket_text(raw_text)
+        spatial_fields = _extract_spatial_fields(_build_easyocr_word_index(results, prep_img.size))
+        for field, value in spatial_fields.items():
+            if value:
+                parsed[field] = value
         _sanitize_untrusted_fields(parsed)
 
         score = _tesseract_candidate_score(raw_text, parsed)
