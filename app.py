@@ -86,15 +86,40 @@ def lookup_system_id(entity_type: str, value: str, lookups: Optional[Dict[str, D
     return source.get(entity_type, {}).get(_normalize_lookup_value(value), "")
 
 
+@st.cache_data(ttl=30)
+def get_master_data_canonical_names() -> Dict[str, List[str]]:
+    names: Dict[str, List[str]] = {"customer": [], "quarry": [], "material": []}
+    if not MASTER_DATA_PATH.exists():
+        return names
+    with MASTER_DATA_PATH.open(newline="", encoding="utf-8-sig") as source:
+        for row in csv.DictReader(source):
+            entity_type = str(row.get("entity_type", "")).strip().lower()
+            name = str(row.get("name", "")).strip()
+            if entity_type in names and name and name not in names[entity_type]:
+                names[entity_type].append(name)
+    return names
+
+
 def format_export_date(value: str) -> str:
     raw_date = str(value or "").strip()
     if not raw_date:
         return ""
+    # Try standard ISO format YYYY-MM-DD
     try:
         parsed = dt.date.fromisoformat(raw_date)
+        return parsed.strftime(os.getenv("NETSUITE_DATE_FORMAT", "%m/%d/%Y"))
     except ValueError:
-        return raw_date
-    return parsed.strftime(os.getenv("NETSUITE_DATE_FORMAT", "%m/%d/%Y"))
+        pass
+
+    # Try common alternate date formats
+    for fmt in ("%Y/%m/%d", "%m/%d/%Y", "%d/%m/%Y", "%Y.%m.%d", "%d-%m-%Y", "%m-%d-%Y", "%b %d, %Y", "%B %d, %Y"):
+        try:
+            parsed = dt.datetime.strptime(raw_date, fmt).date()
+            return parsed.strftime(os.getenv("NETSUITE_DATE_FORMAT", "%m/%d/%Y"))
+        except ValueError:
+            pass
+
+    return raw_date
 
 
 def current_actor() -> str:
@@ -199,6 +224,7 @@ def persist_file(local_path: Path, prefix: str) -> str:
     return str(local_path)
 
 
+@st.cache_data(ttl=600, max_entries=200)
 def load_stored_file(file_reference: str) -> Optional[bytes]:
     if not file_reference.startswith("s3://"):
         local_path = Path(file_reference)
@@ -981,7 +1007,14 @@ def render_upload_tab() -> None:
             return
 
         processed_count = 0
-        for file in uploaded:
+        total_files = len(uploaded)
+        progress_bar = st.progress(0.0)
+        status_text = st.empty()
+
+        for file_idx, file in enumerate(uploaded):
+            status_text.text(f"Processing file {file_idx+1} of {total_files}: '{file.name}'...")
+            progress_bar.progress(file_idx / total_files)
+
             try:
                 file_bytes = file.getbuffer()
                 timestamp = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
@@ -994,8 +1027,10 @@ def render_upload_tab() -> None:
                     try:
                         import pypdf
                         reader = pypdf.PdfReader(file_path)
+                        total_pages = len(reader.pages)
                         pdf_pages_ingested = 0
                         for page_idx, page in enumerate(reader.pages):
+                            status_text.text(f"Processing page {page_idx+1} of {total_pages} from '{file.name}'...")
                             if page.images:
                                 for img_idx, img in enumerate(page.images):
                                     page_img_name = f"{timestamp}_p{page_idx+1}_{img_idx+1}_{file.name.rsplit('.', 1)[0]}.jpg"
@@ -1034,8 +1069,8 @@ def render_upload_tab() -> None:
                 processed_count += 1
             except Exception as exc:
                 logger.exception("upload_processing_failed file=%s error=%s", file.name, exc)
-                st.error(f"Failed to process {file.name}. Check backend log for details.")
-
+        status_text.empty()
+        progress_bar.empty()
         st.success(f"Successfully processed and queued {processed_count} ticket item(s).")
 
 
@@ -1053,6 +1088,31 @@ def render_review_tab() -> None:
         reviewer = st.text_input("Reviewer name", value="office", key="reviewer_name")
     else:
         st.caption(f"Signed in as: {reviewer}")
+
+    # ── Bulk approve auto-ready tickets button ──────────────────────────────
+    auto_ready_candidates = []
+    for r in pending:
+        if r["review_status"] == "auto_ready":
+            r_dict = dict(r)
+            if not validate_system_ids(r_dict):
+                g_c = _clean_num_str(r_dict.get("gross_weight", ""))
+                t_c = _clean_num_str(r_dict.get("tare_weight", ""))
+                n_c = _clean_num_str(r_dict.get("net_weight", ""))
+                if g_c and t_c and n_c:
+                    if abs((int(g_c) - int(t_c)) - int(n_c)) <= 10:
+                        auto_ready_candidates.append(r)
+                elif n_c:
+                    auto_ready_candidates.append(r)
+
+    if auto_ready_candidates:
+        if st.button(f"⚡ Bulk Approve {len(auto_ready_candidates)} Auto-Ready Ticket(s)", key="bulk_approve_btn"):
+            approved_cnt = 0
+            for r in auto_ready_candidates:
+                err = approve_ticket(r["id"], dict(r), reviewer)
+                if not err:
+                    approved_cnt += 1
+            st.success(f"Successfully approved {approved_cnt} ticket(s)!")
+            st.rerun()
 
     def _format_ticket_option(r: sqlite3.Row) -> str:
         t_num = r["ticket_id"] or "Unread Ticket #"
@@ -1158,6 +1218,11 @@ def render_review_tab() -> None:
                 st.code(raw_text, language="text")
 
     with form_col:
+        master_names = get_master_data_canonical_names()
+        master_quarries = master_names.get("quarry", [])
+        master_customers = master_names.get("customer", [])
+        master_materials = master_names.get("material", [])
+
         with st.form(f"review_form_{selected_id}"):
             st.markdown("**Identity**")
             c1, c2 = st.columns(2)
@@ -1166,16 +1231,25 @@ def render_review_tab() -> None:
                 edited["ticket_date"] = st.text_input("Date (YYYY-MM-DD)", value=row["ticket_date"] or "")
                 edited["job_no"]      = st.text_input("Job No.", value=row["job_no"] or "")
             with c2:
-                known_quarries = [
-                    "Seabrook", "Desmond", "Long Point", "Pleasant Valley",
-                    "Shelburne", "Brierly Brook", "Cochrane Hill", "Middlewood",
-                    "Westchester", "Larry J Beck"
-                ]
-                q_default = row["quarry_name"] if row["quarry_name"] in known_quarries else "Long Point"
-                q_idx = known_quarries.index(q_default) if q_default in known_quarries else 0
-                edited["quarry_name"]   = st.selectbox("Quarry", known_quarries, index=q_idx)
-                edited["sold_to"]       = st.text_input("Customer (Sold To)", value=row["sold_to"] or "")
-                edited["material_type"] = st.text_input("Material", value=row["material_type"] or "")
+                captured_q = str(row["quarry_name"] or "").strip()
+                quarry_options = list(master_quarries)
+                if captured_q and captured_q not in quarry_options:
+                    quarry_options.insert(0, captured_q)
+                q_idx = quarry_options.index(captured_q) if captured_q in quarry_options else 0
+                edited["quarry_name"]   = st.selectbox("Quarry", quarry_options, index=q_idx)
+
+                captured_cust = str(row["sold_to"] or "").strip()
+                cust_options = list(master_customers)
+                if captured_cust and captured_cust not in cust_options:
+                    cust_options.insert(0, captured_cust)
+                c_idx = cust_options.index(captured_cust) if captured_cust in cust_options else 0
+                edited["sold_to"]       = st.selectbox("Customer (Sold To)", cust_options, index=c_idx)
+
+                captured_mat = str(row["material_type"] or "").strip()
+                common_mats = ["Crusher Run", "3/4 Clear", "Hot Mix", "Stone Dust", "Rip Rap", "Pit Run", "Fill", "Aggregate", "Asphalt"]
+                mat_options = list(dict.fromkeys(([captured_mat] if captured_mat else []) + master_materials + common_mats))
+                m_idx = mat_options.index(captured_mat) if captured_mat in mat_options else 0
+                edited["material_type"] = st.selectbox("Material", mat_options, index=m_idx)
 
             st.markdown("**Weights**")
             w1, w2, w3 = st.columns(3)
@@ -1188,6 +1262,8 @@ def render_review_tab() -> None:
                 edited["net_weight"]   = st.text_input("Net",   value=default_net)
             if calc_net is not None:
                 st.caption(f"Calculated net (Gross − Tare) = **{calc_net:,}**")
+
+            override_mismatch = st.checkbox("Override weight mismatch (if ticket scale image math is wrong)", value=False)
 
             st.markdown("**Transport**")
             t1, t2 = st.columns(2)
@@ -1202,9 +1278,6 @@ def render_review_tab() -> None:
             reject_clicked = st.form_submit_button("Reject")
 
         # ── Save / reject logic ─────────────────────────────────────────────
-        # Rendered inside form_col (right below the buttons) instead of full
-        # width below both columns, so the reviewer doesn't have to scroll
-        # down to see whether their approval succeeded or failed.
         if save_clicked:
             errors = validate_required(edited)
             errors.extend(validate_system_ids(edited))
@@ -1216,10 +1289,10 @@ def render_review_tab() -> None:
             n_clean = _clean_num_str(edited.get("net_weight",   ""))
             if g_clean and t_clean and n_clean:
                 expected = int(g_clean) - int(t_clean)
-                if abs(expected - int(n_clean)) > 10:
+                if abs(expected - int(n_clean)) > 10 and not override_mismatch:
                     errors.append(
                         f"Net mismatch: Gross ({int(g_clean):,}) − Tare ({int(t_clean):,}) = {expected:,}, but entered Net is {edited.get('net_weight')}. "
-                        "Correct Net or verify against the ticket image."
+                        "Check 'Override weight mismatch' above if the physical ticket math is incorrect."
                     )
             if errors:
                 for err in errors:
