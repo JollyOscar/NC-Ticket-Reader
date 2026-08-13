@@ -1324,6 +1324,65 @@ def render_review_tab() -> None:
             with st.expander("Raw OCR text (use to fill missing fields)", expanded=False):
                 st.code(raw_text, language="text")
 
+        st.caption("Need 100% Google Vision accuracy for a tricky ticket?")
+        if st.button("⚡ Re-Scan this Ticket with Google Vision API", key=f"rescan_google_{selected_id}"):
+            with st.spinner("Scanning ticket image with Google Vision..."):
+                file_name = Path(str(row["image_path"])).name
+                full_image_path = UPLOAD_DIR / file_name
+                if not full_image_path.exists():
+                    img_b = load_stored_file(row["image_path"])
+                    if img_b:
+                        full_image_path.write_bytes(img_b)
+
+                if full_image_path.exists():
+                    fields, conf, provider_used = extract_ticket_data(full_image_path, force_provider="google_vision")
+                    if provider_used == "google_vision":
+                        with get_conn() as conn:
+                            p_params = (
+                                fields.get("ticket_id", row["ticket_id"]),
+                                fields.get("ticket_date", row["ticket_date"]),
+                                fields.get("quarry_name", row["quarry_name"]),
+                                fields.get("sold_to", row["sold_to"]),
+                                fields.get("material_type", row["material_type"]),
+                                fields.get("gross_weight", row["gross_weight"]),
+                                fields.get("tare_weight", row["tare_weight"]),
+                                fields.get("net_weight", row["net_weight"]),
+                                conf,
+                                provider_used,
+                                fields.get("__raw_text", ""),
+                                selected_id,
+                            )
+                            if postgres_enabled():
+                                conn.execute(
+                                    """
+                                    UPDATE tickets
+                                    SET ticket_id = %s, ticket_date = %s, quarry_name = %s,
+                                        sold_to = %s, material_type = %s, gross_weight = %s,
+                                        tare_weight = %s, net_weight = %s, confidence_score = %s,
+                                        ocr_provider = %s, raw_ocr_text = %s
+                                    WHERE id = %s
+                                    """,
+                                    p_params,
+                                )
+                            else:
+                                conn.execute(
+                                    """
+                                    UPDATE tickets
+                                    SET ticket_id = ?, ticket_date = ?, quarry_name = ?,
+                                        sold_to = ?, material_type = ?, gross_weight = ?,
+                                        tare_weight = ?, net_weight = ?, confidence_score = ?,
+                                        ocr_provider = ?, raw_ocr_text = ?
+                                    WHERE id = ?
+                                    """,
+                                    p_params,
+                                )
+                        st.success("Google Vision scan completed! Form fields updated.")
+                        st.rerun()
+                    else:
+                        st.error(f"Google Vision scan failed: {fields.get('__ocr_warning', 'Google credentials or service unavailable.')}")
+                else:
+                    st.error("Ticket image file not found in storage.")
+
     with form_col:
         master_names = get_master_data_canonical_names()
         master_quarries = master_names.get("quarry", [])

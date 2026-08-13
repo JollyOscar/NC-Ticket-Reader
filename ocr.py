@@ -1000,7 +1000,11 @@ def _preprocess_for_ocr(img: Any) -> Any:
     """Normalize ticket images without relying on document-specific content."""
     from PIL import Image as PilImage, ImageEnhance, ImageFilter, ImageOps
 
-    img = ImageOps.exif_transpose(img).convert("L")
+    if hasattr(img, "mode") and img.mode == "RGB":
+        r, g, b = img.split()
+        img = ImageOps.exif_transpose(g)
+    else:
+        img = ImageOps.exif_transpose(img).convert("L")
 
     max_long_side = 3200
     min_short_side = 1400
@@ -1189,20 +1193,59 @@ def _extract_with_pytesseract(image_path: Path) -> Tuple[Dict[str, str], float]:
     return parsed, avg_conf
 
 
-def extract_ticket_data(image_path: Path) -> Tuple[Dict[str, str], float, str]:
+_EASYOCR_READER = None
+
+def _get_easyocr_reader() -> Any:
+    global _EASYOCR_READER
+    if _EASYOCR_READER is None:
+        try:
+            import easyocr
+            _EASYOCR_READER = easyocr.Reader(["en"], gpu=False)
+        except Exception as exc:
+            logger.warning("easyocr_init_failed error=%s", exc)
+            return None
+    return _EASYOCR_READER
+
+
+def _extract_with_easyocr(image_path: Path) -> Tuple[Dict[str, str], float]:
+    reader = _get_easyocr_reader()
+    if reader is None:
+        raise RuntimeError("EasyOCR is not installed or failed to initialize.")
+
+    logger.info("easyocr_request_start image=%s", image_path)
+    results = reader.readtext(str(image_path), detail=1)
+
+    # Sort results by vertical position
+    results = sorted(results, key=lambda item: item[0][0][1] if item[0] else 0)
+    lines: List[str] = []
+    conf_scores: List[float] = []
+    for bbox, text, conf in results:
+        t_clean = str(text or "").strip()
+        if t_clean:
+            lines.append(t_clean)
+            conf_scores.append(float(conf))
+
+    raw_text = "\n".join(lines)
+    parsed = parse_ticket_text(raw_text)
+    _sanitize_untrusted_fields(parsed)
+    parsed["source_site"] = parsed.get("quarry_name", "")
+    parsed["destination_site"] = parsed.get("deliver_to", "")
+    parsed["__raw_text"] = raw_text
+
+    avg_conf = (sum(conf_scores) / float(len(conf_scores))) if conf_scores else 0.5
+    logger.info("easyocr_request_success image=%s conf=%.2f lines=%d", image_path, avg_conf, len(lines))
+    return parsed, avg_conf
+
+
+def extract_ticket_data(image_path: Path, force_provider: Optional[str] = None) -> Tuple[Dict[str, str], float, str]:
     """
     Attempt OCR on a ticket image. Returns (fields_dict, confidence, provider_name).
-
-    Provider priority:
-    1. Google Vision  — only when OCR_PROVIDER=google_vision is explicitly set
-    2. pytesseract    — default free local OCR path for demo/public use
-    3. Empty fields   — last resort; reviewer fills everything manually
     """
-    provider = os.getenv("OCR_PROVIDER", "pytesseract").strip().lower()
+    provider = (force_provider or os.getenv("OCR_PROVIDER", "auto")).strip().lower()
     google_error = ""
     logger.info("ocr_extract_start image=%s provider_env=%s", image_path, provider or "<empty>")
 
-    if provider == "google_vision":
+    if provider == "google_vision" or force_provider == "google_vision":
         try:
             parsed, confidence = _extract_with_google_vision(image_path)
             logger.info("ocr_extract_provider_selected image=%s provider=google_vision confidence=%.2f", image_path, confidence)
@@ -1211,14 +1254,21 @@ def extract_ticket_data(image_path: Path) -> Tuple[Dict[str, str], float, str]:
             google_error = f"{type(exc).__name__}: {exc}"
             logger.exception("ocr_extract_google_failed image=%s error=%s", image_path, google_error)
 
+    # Try EasyOCR first for free local deep-learning AI OCR
+    try:
+        parsed, confidence = _extract_with_easyocr(image_path)
+        if google_error:
+            parsed["__ocr_warning"] = f"Google Vision failed, used EasyOCR fallback ({google_error})"
+        logger.info("ocr_extract_provider_selected image=%s provider=easyocr confidence=%.2f", image_path, confidence)
+        return parsed, confidence, "easyocr"
+    except Exception as exc:
+        logger.info("easyocr_fallback_to_pytesseract reason=%s", exc)
+
+    # Fallback to pytesseract
     try:
         parsed, confidence = _extract_with_pytesseract(image_path)
         if google_error:
-            parsed["__ocr_warning"] = (
-                "Google Vision failed, used pytesseract fallback. "
-                f"Google error: {google_error}"
-            )
-            logger.warning("ocr_extract_fallback image=%s provider=pytesseract reason=%s", image_path, google_error)
+            parsed["__ocr_warning"] = f"Google Vision failed, used pytesseract fallback ({google_error})"
         logger.info("ocr_extract_provider_selected image=%s provider=pytesseract confidence=%.2f", image_path, confidence)
         return parsed, confidence, "pytesseract"
     except Exception as exc:
@@ -1232,9 +1282,6 @@ def extract_ticket_data(image_path: Path) -> Tuple[Dict[str, str], float, str]:
         "__raw_text": "",
     }
     if google_error:
-        empty["__ocr_warning"] = (
-            "Google Vision failed and pytesseract fallback also failed. "
-            f"Google error: {google_error}"
-        )
+        empty["__ocr_warning"] = f"Google Vision failed and local OCR fallbacks failed ({google_error})"
     logger.error("ocr_extract_failed image=%s returning_empty=true", image_path)
     return empty, 0.0, "none"
