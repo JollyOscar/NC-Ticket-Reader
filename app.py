@@ -321,6 +321,26 @@ def persist_file(local_path: Path, prefix: str) -> str:
     return str(local_path)
 
 
+def _select_pdf_ticket_image(images: List[Any]) -> Optional[Any]:
+    """Return the largest embedded image, which is the scanned ticket page."""
+    import io
+    from PIL import Image as PilImage
+
+    largest_image = None
+    largest_area = 0
+    for image in images:
+        try:
+            with PilImage.open(io.BytesIO(image.data)) as candidate:
+                candidate.load()
+                area = candidate.width * candidate.height
+        except Exception:
+            continue
+        if area > largest_area:
+            largest_image = image
+            largest_area = area
+    return largest_image
+
+
 @st.cache_data(ttl=600, max_entries=200)
 def load_stored_file(file_reference: str) -> Optional[bytes]:
     if not file_reference.startswith("s3://"):
@@ -1160,28 +1180,35 @@ def render_upload_tab() -> None:
                             except Exception:
                                 pass
 
-                            if page.images:
-                                for img_idx, img in enumerate(page.images):
-                                    page_img_name = f"{timestamp}_p{page_idx+1}_{img_idx+1}_{file.name.rsplit('.', 1)[0]}.jpg"
-                                    page_img_path = UPLOAD_DIR / page_img_name
+                            page_images = list(page.images)
+                            ticket_image = _select_pdf_ticket_image(page_images)
+                            if ticket_image is not None:
+                                status_text.text(
+                                    f"Preparing ticket page {page_idx+1} of {total_pages} from '{file.name}'..."
+                                )
+                                page_img_name = f"{timestamp}_p{page_idx+1}_{file.name.rsplit('.', 1)[0]}.jpg"
+                                page_img_path = UPLOAD_DIR / page_img_name
 
-                                    img_obj = PilImage.open(io.BytesIO(img.data))
-                                    img_obj = ImageOps.exif_transpose(img_obj)
-                                    if page_rotation != 0:
-                                        img_obj = img_obj.rotate(-page_rotation, expand=True)
+                                img_obj = PilImage.open(io.BytesIO(ticket_image.data))
+                                img_obj = ImageOps.exif_transpose(img_obj)
+                                if page_rotation != 0:
+                                    img_obj = img_obj.rotate(-page_rotation, expand=True)
 
-                                    if img_obj.mode != "RGB":
-                                        img_obj = img_obj.convert("RGB")
-                                    img_obj.save(page_img_path, format="JPEG", quality=95)
-                                    img_obj.close()
+                                if img_obj.mode != "RGB":
+                                    img_obj = img_obj.convert("RGB")
+                                img_obj.save(page_img_path, format="JPEG", quality=95)
+                                img_obj.close()
 
-                                    fields, confidence, provider_used = extract_ticket_data(page_img_path)
-                                    raw_ocr_text = fields.pop("__raw_text", "")
-                                    fields.pop("__ocr_warning", None)
-                                    stored_page_reference = persist_file(page_img_path, "uploads")
-                                    insert_ticket(fields, confidence, stored_page_reference, provider_used, raw_ocr_text, actor)
-                                    pdf_pages_ingested += 1
-                                    processed_count += 1
+                                status_text.text(
+                                    f"Scanning ticket page {page_idx+1} of {total_pages} from '{file.name}'..."
+                                )
+                                fields, confidence, provider_used = extract_ticket_data(page_img_path)
+                                raw_ocr_text = fields.pop("__raw_text", "")
+                                fields.pop("__ocr_warning", None)
+                                stored_page_reference = persist_file(page_img_path, "uploads")
+                                insert_ticket(fields, confidence, stored_page_reference, provider_used, raw_ocr_text, actor)
+                                pdf_pages_ingested += 1
+                                processed_count += 1
                         if pdf_pages_ingested > 0:
                             st.success(f"Extracted and queued {pdf_pages_ingested} ticket page(s) from '{file.name}'.")
                             continue

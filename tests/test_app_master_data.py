@@ -1,6 +1,8 @@
 import csv
+import io
 
 import app
+from PIL import Image
 
 
 def test_resolve_system_ids_matches_names_and_aliases(monkeypatch, tmp_path):
@@ -35,6 +37,18 @@ def test_match_master_entity_corrects_ocr_spelling_to_dropdown_option(monkeypatc
 
     assert app.match_master_entity("customer", "Acme Constrvction") == ("Acme Construction", "CUST-001")
     assert app.match_master_entity("quarry", "Long Piont") == ("Long Point", "QUARRY-019")
+
+
+def test_select_pdf_ticket_image_uses_largest_embedded_image():
+    def embedded_image(width, height):
+        output = io.BytesIO()
+        Image.new("RGB", (width, height), "white").save(output, format="PNG")
+        return type("EmbeddedImage", (), {"data": output.getvalue()})()
+
+    logo = embedded_image(100, 50)
+    ticket = embedded_image(2400, 3200)
+
+    assert app._select_pdf_ticket_image([logo, ticket]) is ticket
 
 
 def test_format_export_date_uses_configured_netsuite_format(monkeypatch):

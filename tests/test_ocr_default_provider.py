@@ -119,6 +119,12 @@ def test_tesseract_orientation_selection_prefers_readable_form(monkeypatch):
     assert score > 0
 
 
+def test_form_label_hits_identifies_upright_ticket_form():
+    raw_text = "DATE JOB NO LICENSE PLATE TRUCKER SOLD TO DELIVER TO MATERIAL GROSS TARE NET RECEIVED BY"
+
+    assert ocr._form_label_hits(raw_text) == 11
+
+
 def test_persist_upright_image_rotates_stored_preview(tmp_path):
     image_path = tmp_path / "ticket.jpg"
     source = Image.new("RGB", (80, 40), "red")

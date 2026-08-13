@@ -1078,15 +1078,20 @@ def _parsed_field_score(parsed: Dict[str, str]) -> int:
     return score
 
 
+_FORM_LABEL_PATTERNS = (
+    r"\bdate\b", r"\bjob\s*no\b", r"\blicense\b", r"\btrucker\b",
+    r"\bsold\s*to\b", r"\bdeliver\s*to\b", r"\bmaterial\b",
+    r"\bgross\b", r"\btare\b", r"\bnet\b", r"\breceived\s*by\b",
+)
+
+
+def _form_label_hits(raw_text: str) -> int:
+    return sum(bool(re.search(pattern, raw_text, re.IGNORECASE)) for pattern in _FORM_LABEL_PATTERNS)
+
+
 def _tesseract_candidate_score(raw_text: str, parsed: Dict[str, str]) -> int:
     """Favor orientations that recognize both the form structure and its values."""
-    expected_labels = (
-        r"\bdate\b", r"\bjob\s*no\b", r"\blicense\b", r"\btrucker\b",
-        r"\bsold\s*to\b", r"\bdeliver\s*to\b", r"\bmaterial\b",
-        r"\bgross\b", r"\btare\b", r"\bnet\b", r"\breceived\s*by\b",
-    )
-    label_hits = sum(bool(re.search(pattern, raw_text, re.IGNORECASE)) for pattern in expected_labels)
-    return _parsed_field_score(parsed) * 100 + label_hits * 10
+    return _parsed_field_score(parsed) * 100 + _form_label_hits(raw_text) * 10
 
 
 def _select_tesseract_candidate(image: Any, read_text: Any) -> Tuple[Any, str, Dict[str, str], int, int]:
@@ -1319,7 +1324,10 @@ def _extract_with_easyocr(image_path: Path) -> Tuple[Dict[str, str], float]:
         if best_candidate is None or score > best_candidate[4]:
             best_candidate = (parsed, avg_conf, angle, raw_text, score)
 
-        if score >= 300:
+        # Recognizing the printed form labels is enough to establish that the
+        # page is upright. Do not run three costly rotations just because
+        # handwritten values are faint or incomplete.
+        if _form_label_hits(raw_text) >= 6 or score >= 300:
             break
 
     if best_candidate is not None:
