@@ -1,5 +1,7 @@
 import csv
 import datetime as dt
+import hmac
+import json
 import os
 import re
 import sqlite3
@@ -18,6 +20,7 @@ DATA_DIR = BASE_DIR / "data"
 UPLOAD_DIR = DATA_DIR / "uploads"
 EXPORT_DIR = DATA_DIR / "exports"
 DB_PATH = DATA_DIR / "prototype.db"
+MASTER_DATA_PATH = Path(os.getenv("MASTER_DATA_PATH", str(BASE_DIR / "master_data.csv")))
 
 REQUIRED_FIELDS = [
     "ticket_id",
@@ -52,6 +55,102 @@ def _db_param_placeholder_count(count: int) -> str:
 
 def duplicates_check_enabled() -> bool:
     return os.getenv("IGNORE_DUPLICATE_CHECK", "").strip().lower() not in {"1", "true", "yes", "on"}
+
+
+def _normalize_lookup_value(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+
+def load_master_data() -> Dict[str, Dict[str, str]]:
+    lookups: Dict[str, Dict[str, str]] = {"customer": {}, "quarry": {}, "material": {}}
+    if not MASTER_DATA_PATH.exists():
+        return lookups
+
+    with MASTER_DATA_PATH.open(newline="", encoding="utf-8-sig") as source:
+        for row in csv.DictReader(source):
+            entity_type = str(row.get("entity_type", "")).strip().lower()
+            name = str(row.get("name", "")).strip()
+            system_id = str(row.get("system_id", "")).strip()
+            aliases = str(row.get("aliases", "")).split("|")
+            if entity_type not in lookups or not name or not system_id:
+                continue
+            for candidate in [name, *aliases]:
+                normalized = _normalize_lookup_value(candidate)
+                if normalized:
+                    lookups[entity_type][normalized] = system_id
+    return lookups
+
+
+def lookup_system_id(entity_type: str, value: str, lookups: Optional[Dict[str, Dict[str, str]]] = None) -> str:
+    source = lookups if lookups is not None else load_master_data()
+    return source.get(entity_type, {}).get(_normalize_lookup_value(value), "")
+
+
+def format_export_date(value: str) -> str:
+    raw_date = str(value or "").strip()
+    if not raw_date:
+        return ""
+    try:
+        parsed = dt.date.fromisoformat(raw_date)
+    except ValueError:
+        return raw_date
+    return parsed.strftime(os.getenv("NETSUITE_DATE_FORMAT", "%Y-%m-%d"))
+
+
+def current_actor() -> str:
+    return str(st.session_state.get("authenticated_actor", "unsecured"))
+
+
+def configured_user_credentials() -> Dict[str, str]:
+    raw = os.getenv("APP_USER_CREDENTIALS", "").strip()
+    if not raw:
+        return {}
+    try:
+        values = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.error("app_user_credentials_invalid_json")
+        return {}
+    if not isinstance(values, dict):
+        return {}
+    return {
+        str(name).strip(): str(password)
+        for name, password in values.items()
+        if str(name).strip() and isinstance(password, str)
+    }
+
+
+def require_authenticated_actor() -> str:
+    password = os.getenv("APP_ACCESS_PASSWORD", "")
+    credentials = configured_user_credentials()
+    if not password and not credentials:
+        return "unsecured"
+
+    actor = current_actor()
+    if actor != "unsecured":
+        return actor
+
+    st.title("Nova Construction Ticket Processing")
+    st.caption("Sign in to access ticket records.")
+    with st.form("sign_in"):
+        name = st.text_input("Name")
+        entered_password = st.text_input("Password", type="password")
+        sign_in = st.form_submit_button("Sign in", type="primary")
+    if sign_in:
+        allowed_names = {
+            item.strip().lower()
+            for item in os.getenv("APP_ALLOWED_USERS", "").split(",")
+            if item.strip()
+        }
+        expected_password = credentials.get(name.strip(), "") if credentials else password
+        valid_name = bool(name.strip()) and bool(expected_password) and (
+            bool(credentials) or not allowed_names or name.strip().lower() in allowed_names
+        )
+        if valid_name and hmac.compare_digest(entered_password, expected_password):
+            st.session_state["authenticated_actor"] = name.strip()
+            st.rerun()
+        st.error("Invalid name or password.")
+    st.stop()
+    return ""
 
 
 def ensure_paths() -> None:
@@ -180,6 +279,10 @@ def init_db() -> None:
                     invoice_number TEXT,
                     invoice_status TEXT NOT NULL DEFAULT 'not_generated',
                     image_path TEXT NOT NULL,
+                    created_by TEXT,
+                    customer_id TEXT,
+                    quarry_id TEXT,
+                    material_id TEXT,
                     reviewed_by TEXT,
                     reviewed_at TEXT,
                     exported_at TEXT,
@@ -195,7 +298,8 @@ def init_db() -> None:
                     id SERIAL PRIMARY KEY,
                     file_name TEXT NOT NULL,
                     exported_at TEXT NOT NULL,
-                    ticket_count INTEGER NOT NULL
+                    ticket_count INTEGER NOT NULL,
+                    exported_by TEXT
                 )
                 """
             )
@@ -230,6 +334,10 @@ def init_db() -> None:
                     invoice_number TEXT,
                     invoice_status TEXT NOT NULL DEFAULT 'not_generated',
                     image_path TEXT NOT NULL,
+                    created_by TEXT,
+                    customer_id TEXT,
+                    quarry_id TEXT,
+                    material_id TEXT,
                     reviewed_by TEXT,
                     reviewed_at TEXT,
                     exported_at TEXT,
@@ -245,7 +353,8 @@ def init_db() -> None:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     file_name TEXT NOT NULL,
                     exported_at TEXT NOT NULL,
-                    ticket_count INTEGER NOT NULL
+                    ticket_count INTEGER NOT NULL,
+                    exported_by TEXT
                 )
                 """
             )
@@ -262,10 +371,26 @@ def init_db() -> None:
             "ocr_provider": "TEXT NOT NULL DEFAULT 'mock'",
             "raw_ocr_text": "TEXT",
             "export_batch_id": "INTEGER",
+            "created_by": "TEXT",
+            "customer_id": "TEXT",
+            "quarry_id": "TEXT",
+            "material_id": "TEXT",
         }
         for col, col_type in maybe_add.items():
             if col not in existing:
                 conn.execute(f"ALTER TABLE tickets ADD COLUMN {col} {col_type}")
+
+        if postgres_enabled():
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'export_batches'"
+            )
+            batch_columns = {row[0] for row in cursor.fetchall()}
+        else:
+            cursor = conn.execute("PRAGMA table_info(export_batches)")
+            batch_columns = {row[1] for row in cursor.fetchall()}
+        if "exported_by" not in batch_columns:
+            conn.execute("ALTER TABLE export_batches ADD COLUMN exported_by TEXT")
 
 
 def fetch_export_batches() -> List[sqlite3.Row]:
@@ -369,7 +494,7 @@ def reopen_export_batch(batch_id: int) -> int:
     return rowcount
 
 
-def insert_ticket(fields: Dict[str, str], confidence_score: float, image_path: str, ocr_provider: str, raw_ocr_text: str = "") -> None:
+def insert_ticket(fields: Dict[str, str], confidence_score: float, image_path: str, ocr_provider: str, raw_ocr_text: str = "", actor: str = "unsecured") -> None:
     status = "auto_ready" if confidence_score >= 0.85 else "needs_review"
     now = dt.datetime.utcnow().isoformat()
 
@@ -395,6 +520,7 @@ def insert_ticket(fields: Dict[str, str], confidence_score: float, image_path: s
             status,
             image_path,
             raw_ocr_text,
+            actor,
             now,
             now,
         )
@@ -406,8 +532,8 @@ def insert_ticket(fields: Dict[str, str], confidence_score: float, image_path: s
                     job_no, quarry_name, trucker, sold_to, deliver_to, received_by,
                     gross_weight, tare_weight, net_weight, source_site,
                     destination_site, confidence_score, ocr_provider, review_status,
-                    image_path, raw_ocr_text, created_at, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    image_path, raw_ocr_text, created_by, created_at, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 params,
             )
@@ -419,8 +545,8 @@ def insert_ticket(fields: Dict[str, str], confidence_score: float, image_path: s
                     job_no, quarry_name, trucker, sold_to, deliver_to, received_by,
                     gross_weight, tare_weight, net_weight, source_site,
                     destination_site, confidence_score, ocr_provider, review_status,
-                    image_path, raw_ocr_text, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    image_path, raw_ocr_text, created_by, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 params,
             )
@@ -506,7 +632,33 @@ def ticket_exists(ticket_id: str, ticket_date: str, exclude_id: int) -> bool:
     return bool(result["cnt"] if isinstance(result, dict) else result[0])
 
 
-def approve_ticket(ticket_row_id: int, edited: Dict[str, str]) -> Optional[str]:
+def resolve_system_ids(data: Dict[str, str]) -> Dict[str, str]:
+    lookups = load_master_data()
+    return {
+        "customer_id": lookup_system_id("customer", data.get("sold_to", ""), lookups),
+        "quarry_id": lookup_system_id("quarry", data.get("quarry_name", ""), lookups),
+        "material_id": lookup_system_id("material", data.get("material_type", ""), lookups),
+    }
+
+
+def validate_system_ids(data: Dict[str, str]) -> List[str]:
+    if not MASTER_DATA_PATH.exists():
+        return []
+
+    ids = resolve_system_ids(data)
+    labels = {
+        "customer_id": "Customer",
+        "quarry_id": "Quarry",
+        "material_id": "Material",
+    }
+    return [
+        f"{labels[field]} is not in the master-data list. Correct the value or add an alias before approving."
+        for field, system_id in ids.items()
+        if not system_id
+    ]
+
+
+def approve_ticket(ticket_row_id: int, edited: Dict[str, str], reviewer: str = "unsecured") -> Optional[str]:
     if ticket_exists(edited["ticket_id"], edited["ticket_date"], ticket_row_id):
         logger.warning(
             "ticket_approve_blocked_duplicate row_id=%s ticket_id=%s date=%s",
@@ -517,6 +669,7 @@ def approve_ticket(ticket_row_id: int, edited: Dict[str, str]) -> Optional[str]:
         return "Duplicate: an approved ticket with this number and date already exists."
 
     now = dt.datetime.utcnow().isoformat()
+    system_ids = resolve_system_ids(edited)
 
     with get_conn() as conn:
         params = (
@@ -535,6 +688,10 @@ def approve_ticket(ticket_row_id: int, edited: Dict[str, str]) -> Optional[str]:
             edited["net_weight"],
             edited.get("quarry_name", ""),
             edited.get("deliver_to", ""),
+            system_ids["customer_id"],
+            system_ids["quarry_id"],
+            system_ids["material_id"],
+            reviewer,
             now,
             now,
             ticket_row_id,
@@ -558,7 +715,11 @@ def approve_ticket(ticket_row_id: int, edited: Dict[str, str]) -> Optional[str]:
                     net_weight = %s,
                     source_site = %s,
                     destination_site = %s,
+                    customer_id = %s,
+                    quarry_id = %s,
+                    material_id = %s,
                     review_status = 'approved',
+                    reviewed_by = %s,
                     reviewed_at = %s,
                     updated_at = %s
                 WHERE id = %s
@@ -584,7 +745,11 @@ def approve_ticket(ticket_row_id: int, edited: Dict[str, str]) -> Optional[str]:
                     net_weight = ?,
                     source_site = ?,
                     destination_site = ?,
+                    customer_id = ?,
+                    quarry_id = ?,
+                    material_id = ?,
                     review_status = 'approved',
+                    reviewed_by = ?,
                     reviewed_at = ?,
                     updated_at = ?
                 WHERE id = ?
@@ -626,7 +791,7 @@ def reject_ticket(ticket_row_id: int, reviewer: str) -> None:
     logger.info("ticket_rejected row_id=%s reviewer=%s", ticket_row_id, reviewer)
 
 
-def export_approved_to_csv() -> Optional[Path]:
+def export_approved_to_csv(exporter: str = "unsecured") -> Optional[Path]:
     with get_conn() as conn:
         if postgres_enabled():
             cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -655,12 +820,16 @@ def export_approved_to_csv() -> Optional[Path]:
 
         file_name = f"ticket_export_{dt.datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
         out_path = EXPORT_DIR / file_name
+        now = dt.datetime.utcnow().isoformat()
 
         csv_headers = [
             "Customer",
+            "Customer ID",
             "Ticket Date",
             "Quarry",
+            "Quarry ID",
             "Product Name",
+            "Material ID",
             "Ticket Number",
             "Gross",
             "Tare",
@@ -671,12 +840,16 @@ def export_approved_to_csv() -> Optional[Path]:
             "Truck / Plate",
             "OCR Provider",
             "Captured At",
+            "Exported At",
         ]
         db_fields = [
             "sold_to",
+            "customer_id",
             "ticket_date",
             "quarry_name",
+            "quarry_id",
             "material_type",
+            "material_id",
             "ticket_id",
             "gross_weight",
             "tare_weight",
@@ -693,22 +866,24 @@ def export_approved_to_csv() -> Optional[Path]:
             writer = csv.writer(f)
             writer.writerow(csv_headers)
             for row in rows:
-                writer.writerow([row[field] for field in db_fields])
+                values = [row[field] for field in db_fields]
+                values[2] = format_export_date(str(row["ticket_date"] or ""))
+                values.append(now)
+                writer.writerow(values)
 
         if bucket_enabled():
             upload_to_bucket(out_path, "exports")
 
-        now = dt.datetime.utcnow().isoformat()
         ids = [row["id"] for row in rows]
         if postgres_enabled():
             batch_cursor = conn.cursor()
             batch_cursor.execute(
                 """
-                INSERT INTO export_batches (file_name, exported_at, ticket_count)
-                VALUES (%s, %s, %s)
+                INSERT INTO export_batches (file_name, exported_at, ticket_count, exported_by)
+                VALUES (%s, %s, %s, %s)
                 RETURNING id
                 """,
-                (file_name, now, len(rows)),
+                (file_name, now, len(rows), exporter),
             )
             batch_id = batch_cursor.fetchone()[0]
             conn.execute(
@@ -718,10 +893,10 @@ def export_approved_to_csv() -> Optional[Path]:
         else:
             batch_cursor = conn.execute(
                 """
-                INSERT INTO export_batches (file_name, exported_at, ticket_count)
-                VALUES (?, ?, ?)
+                INSERT INTO export_batches (file_name, exported_at, ticket_count, exported_by)
+                VALUES (?, ?, ?, ?)
                 """,
-                (file_name, now, len(rows)),
+                (file_name, now, len(rows), exporter),
             )
             batch_id = batch_cursor.lastrowid
             placeholders = _db_param_placeholder_count(len(ids))
@@ -793,6 +968,7 @@ def validate_deliver_to_quality(value: str) -> Optional[str]:
 
 def render_upload_tab() -> None:
     st.subheader("Upload tickets")
+    actor = current_actor()
     uploaded = st.file_uploader(
         "Upload ticket images",
         type=["png", "jpg", "jpeg", "pdf"],
@@ -830,7 +1006,7 @@ def render_upload_tab() -> None:
                                     raw_ocr_text = fields.pop("__raw_text", "")
                                     fields.pop("__ocr_warning", None)
                                     stored_page_reference = persist_file(page_img_path, "uploads")
-                                    insert_ticket(fields, confidence, stored_page_reference, provider_used, raw_ocr_text)
+                                    insert_ticket(fields, confidence, stored_page_reference, provider_used, raw_ocr_text, actor)
                                     pdf_pages_ingested += 1
                                     processed_count += 1
                         if pdf_pages_ingested > 0:
@@ -854,7 +1030,7 @@ def render_upload_tab() -> None:
                     st.warning(f"{file.name}: {warning_msg}")
 
                 stored_file_reference = persist_file(file_path, "uploads")
-                insert_ticket(fields, confidence, stored_file_reference, provider_used, raw_ocr_text)
+                insert_ticket(fields, confidence, stored_file_reference, provider_used, raw_ocr_text, actor)
                 processed_count += 1
             except Exception as exc:
                 logger.exception("upload_processing_failed file=%s error=%s", file.name, exc)
@@ -872,7 +1048,11 @@ def render_review_tab() -> None:
         return
 
     # ── Reviewer + ticket selector ─────────────────────────────────────────────
-    reviewer = st.text_input("Reviewer name", value="office", key="reviewer_name")
+    reviewer = current_actor()
+    if reviewer == "unsecured":
+        reviewer = st.text_input("Reviewer name", value="office", key="reviewer_name")
+    else:
+        st.caption(f"Signed in as: {reviewer}")
 
     def _format_ticket_option(r: sqlite3.Row) -> str:
         t_num = r["ticket_id"] or "Unread Ticket #"
@@ -1027,6 +1207,7 @@ def render_review_tab() -> None:
         # down to see whether their approval succeeded or failed.
         if save_clicked:
             errors = validate_required(edited)
+            errors.extend(validate_system_ids(edited))
             deliver_to_issue = validate_deliver_to_quality(edited.get("deliver_to", ""))
             if deliver_to_issue:
                 errors.append(deliver_to_issue)
@@ -1044,7 +1225,7 @@ def render_review_tab() -> None:
                 for err in errors:
                     st.error(err)
             else:
-                err_msg = approve_ticket(selected_id, edited)
+                err_msg = approve_ticket(selected_id, edited, reviewer)
                 if err_msg:
                     st.error(err_msg)
                 else:
@@ -1085,7 +1266,7 @@ def render_export_tab() -> None:
         )
 
     if st.button("Export approved tickets to CSV", type="primary"):
-        out_path = export_approved_to_csv()
+        out_path = export_approved_to_csv(current_actor())
         if not out_path:
             st.info("No unexported approved tickets available.")
         else:
@@ -1116,6 +1297,12 @@ def render_history_tab() -> None:
         image_bytes = load_stored_file(row["image_path"])
         if image_bytes:
             st.image(image_bytes, use_column_width=True)
+            st.download_button(
+                "Download ticket image",
+                data=image_bytes,
+                file_name=Path(str(row["image_path"])).name,
+                key=f"download_ticket_{selected_id}",
+            )
         else:
             st.warning("Ticket image could not be loaded from storage.")
     with details_col:
@@ -1157,7 +1344,7 @@ def render_history_tab() -> None:
         return
 
     batch_options = {
-        f"Batch #{batch['id']} | {batch['file_name']} | {batch['ticket_count']} ticket(s) | {batch['exported_at']}": batch["id"]
+        f"Batch #{batch['id']} | {batch['file_name']} | {batch['ticket_count']} ticket(s) | {batch['exported_at']} | {batch['exported_by'] or 'unsecured'}": batch["id"]
         for batch in batches
     }
     selected_batch_id = batch_options[st.selectbox("Select past export", list(batch_options.keys()))]
@@ -1254,6 +1441,7 @@ def main() -> None:
         menu_items={"Get Help": None, "Report a bug": None, "About": None},
     )
 
+    actor = require_authenticated_actor()
     ensure_paths()
     init_db()
     logger.info(
@@ -1261,6 +1449,8 @@ def main() -> None:
         os.getenv("OCR_PROVIDER", "").strip().lower() or "<empty>",
         duplicates_check_enabled(),
     )
+    if actor == "unsecured":
+        st.warning("Access control is not configured. Set APP_ACCESS_PASSWORD before production use.")
 
     # ── Theme: read from URL param, default dark ──────────────────────────────
     raw_param = st.query_params.get("theme", "dark").lower()

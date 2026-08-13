@@ -1,0 +1,4 @@
+entity_type,name,system_id,aliases
+customer,Example Customer,CUST-001,Example Customer Ltd|Example Co
+quarry,Long Point,QUARRY-001,Long Point Quarry
+material,Crusher Run,MAT-001,CR|Crusher Run 0-20

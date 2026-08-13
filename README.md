@@ -72,6 +72,15 @@ The live application is available at <https://nc-ticket-reader-production.up.rai
 
 Both modes use the same field parsing and validation path. Google Vision is retained for the paid production release; it is never silently selected for the public demo.
 
+## Production controls
+
+- Gross and tare are compared with captured net during review. A variance greater than 10 units must be corrected before approval.
+- Duplicate ticket number/date combinations are blocked at approval (unless `IGNORE_DUPLICATE_CHECK` is explicitly enabled for testing).
+- To resolve NetSuite IDs, copy `master_data.example.csv` to `master_data.csv` and populate `entity_type`, `name`, `system_id`, and optional pipe-delimited `aliases`. Supported entity types are `customer`, `quarry`, and `material`. Once that file is present, unmatched values cannot be approved.
+- Set `NETSUITE_DATE_FORMAT` to the date format required by the NetSuite import, for example `%m/%d/%Y`. It defaults to ISO `%Y-%m-%d`.
+- Ticket images and exports are retained in the configured Railway Bucket. Ticket History allows an operator to download an image for a NetSuite or invoice-email attachment; automatic NetSuite attachments require a separate NetSuite API integration and credentials.
+- Set `APP_USER_CREDENTIALS` in Railway to a JSON object of distinct user names and passwords before production use. `APP_ACCESS_PASSWORD` with optional comma-separated `APP_ALLOWED_USERS` remains available for a shared-password test environment. Upload, approval, and export records retain the acting user; export batches retain their exporter. For company production use, put the service behind organization SSO or an access proxy and use the verified email address as the actor.
+
 ## Verification
 
 ```bat
