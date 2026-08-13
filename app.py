@@ -13,7 +13,7 @@ import psycopg2
 import streamlit as st
 from psycopg2.extras import RealDictCursor
 from backend_logging import get_log_path, get_logger, tail_log_lines
-from ocr import extract_ticket_data
+from ocr import extract_pdf_ticket_data, extract_ticket_data
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -1202,13 +1202,7 @@ def render_upload_tab() -> None:
                                 status_text.text(
                                     f"Scanning ticket page {page_idx+1} of {total_pages} from '{file.name}'..."
                                 )
-                                # PDF batches need predictable per-page runtime. EasyOCR can
-                                # spend minutes on a difficult high-resolution scan and block
-                                # the whole Streamlit request; use the fast local engine here.
-                                fields, confidence, provider_used = extract_ticket_data(
-                                    page_img_path,
-                                    force_provider="pytesseract",
-                                )
+                                fields, confidence, provider_used = extract_pdf_ticket_data(page_img_path)
                                 raw_ocr_text = fields.pop("__raw_text", "")
                                 fields.pop("__ocr_warning", None)
                                 stored_page_reference = persist_file(page_img_path, "uploads")

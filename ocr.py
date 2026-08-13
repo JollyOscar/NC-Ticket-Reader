@@ -1105,6 +1105,8 @@ def _select_tesseract_candidate(image: Any, read_text: Any) -> Tuple[Any, str, D
         score = _tesseract_candidate_score(raw_text, parsed)
         if best is None or score > best[3]:
             best = (prepared, raw_text, parsed, score, angle)
+        if _form_label_hits(raw_text) >= 6:
+            break
 
     if best is None:
         raise RuntimeError("No Tesseract orientation candidates were generated.")
@@ -1125,6 +1127,36 @@ def _persist_upright_image(image_path: Path, source_image: Any, angle: int) -> N
             upright.convert("RGB").save(image_path, format="JPEG", quality=95)
     finally:
         upright.close()
+
+
+def _orient_ticket_with_tesseract(image_path: Path) -> int:
+    """Persist the most readable cardinal orientation for a ticket image."""
+    import pytesseract
+    from PIL import Image as PilImage
+
+    configured_cmd = _configure_tesseract_cmd()
+    if configured_cmd:
+        pytesseract.pytesseract.tesseract_cmd = configured_cmd
+
+    source_image = PilImage.open(image_path)
+    source_image.load()
+    try:
+        _, raw_text, _, score, angle = _select_tesseract_candidate(
+            source_image,
+            lambda candidate, _angle: pytesseract.image_to_string(candidate, config="--oem 1 --psm 11"),
+        )
+        _persist_upright_image(image_path, source_image, angle)
+    finally:
+        source_image.close()
+
+    logger.info(
+        "tesseract_orientation_success image=%s angle=%s labels=%s score=%s",
+        image_path,
+        angle,
+        _form_label_hits(raw_text),
+        score,
+    )
+    return angle
 
 
 def _extract_spatial_fields(words: List[Dict]) -> Dict[str, str]:
@@ -1251,7 +1283,11 @@ def _get_easyocr_reader() -> Any:
     return _EASYOCR_READER
 
 
-def _extract_with_easyocr(image_path: Path) -> Tuple[Dict[str, str], float]:
+def _extract_with_easyocr(
+    image_path: Path,
+    angles: Tuple[int, ...] = (0, 90, 180, 270),
+    max_long_side: int = 1800,
+) -> Tuple[Dict[str, str], float]:
     reader = _get_easyocr_reader()
     if reader is None:
         raise RuntimeError("EasyOCR is not installed or failed to initialize.")
@@ -1264,8 +1300,6 @@ def _extract_with_easyocr(image_path: Path) -> Tuple[Dict[str, str], float]:
     source_img.load()
     source_img = ImageOps.exif_transpose(source_img)
 
-    angles = (0, 90, 180, 270)
-
     best_candidate: Optional[Tuple[Dict[str, str], float, int, str, int]] = None
 
     for angle in angles:
@@ -1273,8 +1307,8 @@ def _extract_with_easyocr(image_path: Path) -> Tuple[Dict[str, str], float]:
         prep_img = _preprocess_for_ocr(candidate_img)
 
         w, h = prep_img.size
-        if max(w, h) > 1800:
-            scale = 1800.0 / float(max(w, h))
+        if max(w, h) > max_long_side:
+            scale = max_long_side / float(max(w, h))
             prep_img = prep_img.resize((int(w * scale), int(h * scale)), getattr(PilImage, "LANCZOS", 3))
 
         img_byte_arr = io.BytesIO()
@@ -1342,6 +1376,30 @@ def _extract_with_easyocr(image_path: Path) -> Tuple[Dict[str, str], float]:
 
     source_img.close()
     raise RuntimeError("EasyOCR failed to extract orientation candidates.")
+
+
+def extract_pdf_ticket_data(image_path: Path) -> Tuple[Dict[str, str], float, str]:
+    """Use Tesseract for PDF-page orientation, then EasyOCR for handwriting."""
+    logger.info("pdf_ticket_extract_start image=%s", image_path)
+    try:
+        _orient_ticket_with_tesseract(image_path)
+    except Exception as exc:
+        logger.warning("pdf_ticket_orientation_failed image=%s error=%s", image_path, exc)
+
+    try:
+        parsed, confidence = _extract_with_easyocr(
+            image_path,
+            angles=(0,),
+            max_long_side=1600,
+        )
+        logger.info("pdf_ticket_extract_success image=%s provider=easyocr", image_path)
+        return parsed, confidence, "easyocr"
+    except Exception as exc:
+        logger.warning("pdf_ticket_easyocr_failed image=%s error=%s", image_path, exc)
+
+    parsed, confidence = _extract_with_pytesseract(image_path)
+    logger.info("pdf_ticket_extract_success image=%s provider=pytesseract_fallback", image_path)
+    return parsed, confidence, "pytesseract_fallback"
 
 
 def extract_ticket_data(image_path: Path, force_provider: Optional[str] = None) -> Tuple[Dict[str, str], float, str]:
