@@ -1,5 +1,6 @@
 import csv
 import io
+from pathlib import Path
 
 import app
 from PIL import Image
@@ -52,6 +53,14 @@ def test_match_master_entity_does_not_treat_unknown_material_as_exact_aggregate(
     assert app.match_master_entity("material", "unreadable scribble") == ("unreadable scribble", "")
 
 
+def test_current_master_data_resolves_doherty_lime_and_surge_aliases():
+    assert app.match_master_entity("customer", "Doherty Lime Ltd") == (
+        "Doherty Lime Spreading Excavating Ltd.",
+        "4570",
+    )
+    assert app.match_master_entity("material", "Surge") == ("Aggregate", "20")
+
+
 def test_select_pdf_ticket_image_uses_largest_embedded_image():
     def embedded_image(width, height):
         output = io.BytesIO()
@@ -62,6 +71,38 @@ def test_select_pdf_ticket_image_uses_largest_embedded_image():
     ticket = embedded_image(2400, 3200)
 
     assert app._select_pdf_ticket_image([logo, ticket]) is ticket
+
+
+def test_pdf_batch_workflow_extracts_and_queues_seven_real_ticket_pages(monkeypatch, tmp_path):
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    monkeypatch.setattr(app, "DB_PATH", tmp_path / "workflow.db")
+    monkeypatch.setattr(app, "UPLOAD_DIR", uploads)
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+    monkeypatch.delenv("AWS_S3_BUCKET_NAME", raising=False)
+    monkeypatch.delenv("AWS_ENDPOINT_URL", raising=False)
+    app.init_db()
+
+    fixture = Path(__file__).parent / "fixtures" / "ticket-01.jpg"
+    with Image.open(fixture) as source:
+        pages = [source.convert("RGB") for _ in range(7)]
+    pdf_path = tmp_path / "seven_tickets.pdf"
+    try:
+        pages[0].save(pdf_path, save_all=True, append_images=pages[1:], resolution=150.0)
+    finally:
+        for page in pages:
+            page.close()
+
+    messages = []
+    processed = app.process_pdf_ticket_batch(pdf_path, "seven_tickets.pdf", "test", messages.append)
+    tickets = app.fetch_tickets()
+
+    assert processed == 7
+    assert len(tickets) == 7
+    assert all(ticket["ocr_provider"] == "pytesseract" for ticket in tickets)
+    assert all(ticket["ticket_id"] == "0355" for ticket in tickets)
+    assert messages[-1] == "Scanning ticket page 7 of 7 from 'seven_tickets.pdf'..."
 
 
 def test_format_export_date_uses_configured_netsuite_format(monkeypatch):

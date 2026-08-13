@@ -6,7 +6,7 @@ import os
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import boto3
 import psycopg2
@@ -341,6 +341,62 @@ def _select_pdf_ticket_image(images: List[Any]) -> Optional[Any]:
             largest_image = image
             largest_area = area
     return largest_image
+
+
+def process_pdf_ticket_batch(
+    file_path: Path,
+    original_file_name: str,
+    actor: str,
+    report_progress: Optional[Callable[[str], None]] = None,
+) -> int:
+    """Extract, OCR, persist, and queue one ticket image from each PDF page."""
+    import io
+    import pypdf
+    from PIL import Image as PilImage, ImageOps
+
+    reader = pypdf.PdfReader(file_path)
+    total_pages = len(reader.pages)
+    pdf_pages_ingested = 0
+
+    for page_idx, page in enumerate(reader.pages):
+        if report_progress:
+            report_progress(f"Processing ticket page {page_idx+1} of {total_pages} from '{original_file_name}'...")
+
+        try:
+            page_rotation = int(page.get("/Rotate", 0) or 0)
+        except Exception:
+            page_rotation = 0
+
+        ticket_image = _select_pdf_ticket_image(list(page.images))
+        if ticket_image is None:
+            continue
+
+        if report_progress:
+            report_progress(f"Preparing ticket page {page_idx+1} of {total_pages} from '{original_file_name}'...")
+
+        page_img_path = UPLOAD_DIR / f"{file_path.stem}_p{page_idx+1}.jpg"
+        img_obj = PilImage.open(io.BytesIO(ticket_image.data))
+        try:
+            img_obj = ImageOps.exif_transpose(img_obj)
+            if page_rotation != 0:
+                img_obj = img_obj.rotate(-page_rotation, expand=True)
+            if img_obj.mode != "RGB":
+                img_obj = img_obj.convert("RGB")
+            img_obj.save(page_img_path, format="JPEG", quality=95)
+        finally:
+            img_obj.close()
+
+        if report_progress:
+            report_progress(f"Scanning ticket page {page_idx+1} of {total_pages} from '{original_file_name}'...")
+
+        fields, confidence, provider_used = extract_pdf_ticket_data(page_img_path)
+        raw_ocr_text = fields.pop("__raw_text", "")
+        fields.pop("__ocr_warning", None)
+        stored_page_reference = persist_file(page_img_path, "uploads")
+        insert_ticket(fields, confidence, stored_page_reference, provider_used, raw_ocr_text, actor)
+        pdf_pages_ingested += 1
+
+    return pdf_pages_ingested
 
 
 @st.cache_data(ttl=600, max_entries=200)
@@ -1168,49 +1224,13 @@ def render_upload_tab() -> None:
                 # PDF Multi-page Ticket Batch Handling
                 if file.name.lower().endswith(".pdf"):
                     try:
-                        import pypdf
-                        import io
-                        from PIL import Image as PilImage, ImageOps
-                        reader = pypdf.PdfReader(file_path)
-                        total_pages = len(reader.pages)
-                        pdf_pages_ingested = 0
-                        for page_idx, page in enumerate(reader.pages):
-                            status_text.text(f"Processing page {page_idx+1} of {total_pages} from '{file.name}'...")
-                            page_rotation = 0
-                            try:
-                                page_rotation = int(page.get("/Rotate", 0) or 0)
-                            except Exception:
-                                pass
-
-                            page_images = list(page.images)
-                            ticket_image = _select_pdf_ticket_image(page_images)
-                            if ticket_image is not None:
-                                status_text.text(
-                                    f"Preparing ticket page {page_idx+1} of {total_pages} from '{file.name}'..."
-                                )
-                                page_img_name = f"{timestamp}_p{page_idx+1}_{file.name.rsplit('.', 1)[0]}.jpg"
-                                page_img_path = UPLOAD_DIR / page_img_name
-
-                                img_obj = PilImage.open(io.BytesIO(ticket_image.data))
-                                img_obj = ImageOps.exif_transpose(img_obj)
-                                if page_rotation != 0:
-                                    img_obj = img_obj.rotate(-page_rotation, expand=True)
-
-                                if img_obj.mode != "RGB":
-                                    img_obj = img_obj.convert("RGB")
-                                img_obj.save(page_img_path, format="JPEG", quality=95)
-                                img_obj.close()
-
-                                status_text.text(
-                                    f"Scanning ticket page {page_idx+1} of {total_pages} from '{file.name}'..."
-                                )
-                                fields, confidence, provider_used = extract_pdf_ticket_data(page_img_path)
-                                raw_ocr_text = fields.pop("__raw_text", "")
-                                fields.pop("__ocr_warning", None)
-                                stored_page_reference = persist_file(page_img_path, "uploads")
-                                insert_ticket(fields, confidence, stored_page_reference, provider_used, raw_ocr_text, actor)
-                                pdf_pages_ingested += 1
-                                processed_count += 1
+                        pdf_pages_ingested = process_pdf_ticket_batch(
+                            file_path,
+                            file.name,
+                            actor,
+                            lambda message: status_text.text(message),
+                        )
+                        processed_count += pdf_pages_ingested
                         if pdf_pages_ingested > 0:
                             st.success(f"Extracted and queued {pdf_pages_ingested} ticket page(s) from '{file.name}'.")
                             continue
