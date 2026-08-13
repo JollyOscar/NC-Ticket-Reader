@@ -1049,9 +1049,9 @@ def _tesseract_candidate_score(raw_text: str, parsed: Dict[str, str]) -> int:
     return _parsed_field_score(parsed) * 100 + label_hits * 10
 
 
-def _select_tesseract_candidate(image: Any, read_text: Any) -> Tuple[Any, str, Dict[str, str], int]:
+def _select_tesseract_candidate(image: Any, read_text: Any) -> Tuple[Any, str, Dict[str, str], int, int]:
     """Run sparse-text OCR in each cardinal orientation and keep the best form read."""
-    best: Optional[Tuple[Any, str, Dict[str, str], int]] = None
+    best: Optional[Tuple[Any, str, Dict[str, str], int, int]] = None
     for angle in (0, 90, 180, 270):
         candidate = image if angle == 0 else image.rotate(angle, expand=True)
         prepared = _preprocess_for_ocr(candidate)
@@ -1059,11 +1059,27 @@ def _select_tesseract_candidate(image: Any, read_text: Any) -> Tuple[Any, str, D
         parsed = parse_ticket_text(raw_text)
         score = _tesseract_candidate_score(raw_text, parsed)
         if best is None or score > best[3]:
-            best = (prepared, raw_text, parsed, score)
+            best = (prepared, raw_text, parsed, score, angle)
 
     if best is None:
         raise RuntimeError("No Tesseract orientation candidates were generated.")
     return best
+
+
+def _persist_upright_image(image_path: Path, source_image: Any, angle: int) -> None:
+    """Store the selected orientation so the review image matches the OCR layout."""
+    if angle == 0:
+        return
+    from PIL import ImageOps
+
+    upright = ImageOps.exif_transpose(source_image).rotate(angle, expand=True)
+    try:
+        if image_path.suffix.lower() == ".png":
+            upright.save(image_path, format="PNG")
+        else:
+            upright.convert("RGB").save(image_path, format="JPEG", quality=95)
+    finally:
+        upright.close()
 
 
 def _extract_tesseract_spatial_fields(data: Dict[str, List[Any]], image_size: Tuple[int, int]) -> Dict[str, str]:
@@ -1097,14 +1113,25 @@ def _sanitize_untrusted_fields(parsed: Dict[str, str]) -> None:
         parsed["job_no"] = ""
 
     ticket_id = parsed.get("ticket_id", "")
-    if ticket_id and parsed.get("received_by", "") == ticket_id:
+    ticket_number = re.sub(r"[^\d]", "", ticket_id)
+    for field in ("gross_weight", "tare_weight", "net_weight"):
+        value_number = re.sub(r"[^\d]", "", str(parsed.get(field, "")))
+        if ticket_number and value_number and int(value_number) == int(ticket_number):
+            parsed[field] = ""
+    received_number = re.sub(r"[^\d]", "", str(parsed.get("received_by", "")))
+    if ticket_id and received_number == ticket_number:
         parsed["received_by"] = ""
 
     for field in ("deliver_to", "sold_to", "trucker", "material_type"):
         value = parsed.get(field, "")
         letters = len(re.findall(r"[A-Za-z]", value))
         symbols = len(re.findall(r"[^A-Za-z0-9\s.'-]", value))
-        if letters < 2 or symbols > max(2, len(value) // 4):
+        normalized = re.sub(r"[^a-z]", "", value.lower())
+        is_label_fragment = normalized in {
+            "gross", "gros", "tare", "net", "material", "sold", "deliver", "trucker",
+        }
+        is_repeated_noise = len(normalized) >= 2 and len(set(normalized)) == 1
+        if letters < 2 or symbols > max(2, len(value) // 4) or is_label_fragment or is_repeated_noise:
             parsed[field] = ""
 
 
@@ -1119,10 +1146,12 @@ def _extract_with_pytesseract(image_path: Path) -> Tuple[Dict[str, str], float]:
 
     primary_config = "--oem 1 --psm 11"
     source_image = PilImage.open(image_path)
-    img, raw_text, parsed, orientation_score = _select_tesseract_candidate(
+    source_image.load()
+    img, raw_text, parsed, orientation_score, orientation_angle = _select_tesseract_candidate(
         source_image,
         lambda candidate, angle: pytesseract.image_to_string(candidate, config=primary_config),
     )
+    _persist_upright_image(image_path, source_image, orientation_angle)
     source_image.close()
     selected_config = primary_config
 
@@ -1154,8 +1183,8 @@ def _extract_with_pytesseract(image_path: Path) -> Tuple[Dict[str, str], float]:
     parsed["destination_site"] = parsed.get("deliver_to", "")
     parsed["__raw_text"] = raw_text
     logger.info(
-        "pytesseract_request_success image=%s config=%s score=%s conf=%.2f",
-        image_path, selected_config, orientation_score, avg_conf,
+        "pytesseract_request_success image=%s config=%s score=%s angle=%s conf=%.2f",
+        image_path, selected_config, orientation_score, orientation_angle, avg_conf,
     )
     return parsed, avg_conf
 

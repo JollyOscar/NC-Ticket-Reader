@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from PIL import Image
+
 import ocr
 
 
@@ -64,6 +66,26 @@ def test_sanitize_untrusted_fields_rejects_header_and_identifier_bleed():
     assert parsed["material_type"] == "Road Base"
 
 
+def test_sanitize_untrusted_fields_rejects_ticket_number_and_label_fragments():
+    parsed = {
+        "ticket_id": "07235",
+        "gross_weight": "",
+        "tare_weight": "7235",
+        "net_weight": "14450",
+        "sold_to": "ee",
+        "material_type": "GROS",
+        "deliver_to": "ES",
+        "trucker": "an ed",
+    }
+
+    ocr._sanitize_untrusted_fields(parsed)
+
+    assert parsed["tare_weight"] == ""
+    assert parsed["net_weight"] == "14450"
+    assert parsed["sold_to"] == ""
+    assert parsed["material_type"] == ""
+
+
 def test_tesseract_orientation_selection_prefers_readable_form(monkeypatch):
     class FakeImage:
         def rotate(self, angle, expand):
@@ -76,9 +98,21 @@ def test_tesseract_orientation_selection_prefers_readable_form(monkeypatch):
             return "DATE May 13/26 GROSS 25000 TARE 9800 NET 15200 MATERIAL Type 1"
         return "unreadable"
 
-    prepared, raw_text, parsed, score = ocr._select_tesseract_candidate(FakeImage(), read_text)
+    prepared, raw_text, parsed, score, angle = ocr._select_tesseract_candidate(FakeImage(), read_text)
 
     assert prepared == 90
+    assert angle == 90
     assert raw_text.startswith("DATE")
     assert parsed["gross_weight"] == "25000"
     assert score > 0
+
+
+def test_persist_upright_image_rotates_stored_preview(tmp_path):
+    image_path = tmp_path / "ticket.jpg"
+    source = Image.new("RGB", (80, 40), "red")
+
+    ocr._persist_upright_image(image_path, source, 90)
+    source.close()
+
+    with Image.open(image_path) as stored:
+        assert stored.size == (40, 80)
