@@ -1133,16 +1133,33 @@ def render_upload_tab() -> None:
                 if file.name.lower().endswith(".pdf"):
                     try:
                         import pypdf
+                        import io
+                        from PIL import Image as PilImage, ImageOps
                         reader = pypdf.PdfReader(file_path)
                         total_pages = len(reader.pages)
                         pdf_pages_ingested = 0
                         for page_idx, page in enumerate(reader.pages):
                             status_text.text(f"Processing page {page_idx+1} of {total_pages} from '{file.name}'...")
+                            page_rotation = 0
+                            try:
+                                page_rotation = int(page.get("/Rotate", 0) or 0)
+                            except Exception:
+                                pass
+
                             if page.images:
                                 for img_idx, img in enumerate(page.images):
                                     page_img_name = f"{timestamp}_p{page_idx+1}_{img_idx+1}_{file.name.rsplit('.', 1)[0]}.jpg"
                                     page_img_path = UPLOAD_DIR / page_img_name
-                                    page_img_path.write_bytes(img.data)
+
+                                    img_obj = PilImage.open(io.BytesIO(img.data))
+                                    img_obj = ImageOps.exif_transpose(img_obj)
+                                    if page_rotation != 0:
+                                        img_obj = img_obj.rotate(-page_rotation, expand=True)
+
+                                    if img_obj.mode != "RGB":
+                                        img_obj = img_obj.convert("RGB")
+                                    img_obj.save(page_img_path, format="JPEG", quality=95)
+                                    img_obj.close()
 
                                     fields, confidence, provider_used = extract_ticket_data(page_img_path)
                                     raw_ocr_text = fields.pop("__raw_text", "")
@@ -1323,6 +1340,92 @@ def render_review_tab() -> None:
         if raw_text:
             with st.expander("Raw OCR text (use to fill missing fields)", expanded=False):
                 st.code(raw_text, language="text")
+
+        st.caption("Image orientation correction:")
+        rot_c1, rot_c2 = st.columns(2)
+        with rot_c1:
+            if st.button("🔄 Rotate Left 90°", key=f"rot_left_{selected_id}"):
+                file_name = Path(str(row["image_path"])).name
+                full_image_path = UPLOAD_DIR / file_name
+                if not full_image_path.exists():
+                    img_b = load_stored_file(row["image_path"])
+                    if img_b:
+                        full_image_path.write_bytes(img_b)
+
+                if full_image_path.exists():
+                    import io
+                    from PIL import Image as PilImage
+                    img_obj = PilImage.open(full_image_path)
+                    rotated = img_obj.rotate(90, expand=True)
+                    if rotated.mode != "RGB":
+                        rotated = rotated.convert("RGB")
+                    rotated.save(full_image_path, format="JPEG", quality=95)
+                    img_obj.close()
+                    rotated.close()
+
+                    fields, conf, provider_used = extract_ticket_data(full_image_path)
+                    with get_conn() as conn:
+                        p_params = (
+                            fields.get("ticket_id", row["ticket_id"]),
+                            fields.get("ticket_date", row["ticket_date"]),
+                            fields.get("quarry_name", row["quarry_name"]),
+                            fields.get("sold_to", row["sold_to"]),
+                            fields.get("material_type", row["material_type"]),
+                            fields.get("gross_weight", row["gross_weight"]),
+                            fields.get("tare_weight", row["tare_weight"]),
+                            fields.get("net_weight", row["net_weight"]),
+                            conf,
+                            provider_used,
+                            fields.get("__raw_text", ""),
+                            selected_id,
+                        )
+                        query = "UPDATE tickets SET ticket_id = %s, ticket_date = %s, quarry_name = %s, sold_to = %s, material_type = %s, gross_weight = %s, tare_weight = %s, net_weight = %s, confidence_score = %s, ocr_provider = %s, raw_ocr_text = %s WHERE id = %s" if postgres_enabled() else "UPDATE tickets SET ticket_id = ?, ticket_date = ?, quarry_name = ?, sold_to = ?, material_type = ?, gross_weight = ?, tare_weight = ?, net_weight = ?, confidence_score = ?, ocr_provider = ?, raw_ocr_text = ? WHERE id = ?"
+                        conn.execute(query, p_params)
+                    st.cache_data.clear()
+                    st.success("Rotated Left 90° & re-scanned!")
+                    st.rerun()
+
+        with rot_c2:
+            if st.button("🔄 Rotate Right 90°", key=f"rot_right_{selected_id}"):
+                file_name = Path(str(row["image_path"])).name
+                full_image_path = UPLOAD_DIR / file_name
+                if not full_image_path.exists():
+                    img_b = load_stored_file(row["image_path"])
+                    if img_b:
+                        full_image_path.write_bytes(img_b)
+
+                if full_image_path.exists():
+                    import io
+                    from PIL import Image as PilImage
+                    img_obj = PilImage.open(full_image_path)
+                    rotated = img_obj.rotate(270, expand=True)
+                    if rotated.mode != "RGB":
+                        rotated = rotated.convert("RGB")
+                    rotated.save(full_image_path, format="JPEG", quality=95)
+                    img_obj.close()
+                    rotated.close()
+
+                    fields, conf, provider_used = extract_ticket_data(full_image_path)
+                    with get_conn() as conn:
+                        p_params = (
+                            fields.get("ticket_id", row["ticket_id"]),
+                            fields.get("ticket_date", row["ticket_date"]),
+                            fields.get("quarry_name", row["quarry_name"]),
+                            fields.get("sold_to", row["sold_to"]),
+                            fields.get("material_type", row["material_type"]),
+                            fields.get("gross_weight", row["gross_weight"]),
+                            fields.get("tare_weight", row["tare_weight"]),
+                            fields.get("net_weight", row["net_weight"]),
+                            conf,
+                            provider_used,
+                            fields.get("__raw_text", ""),
+                            selected_id,
+                        )
+                        query = "UPDATE tickets SET ticket_id = %s, ticket_date = %s, quarry_name = %s, sold_to = %s, material_type = %s, gross_weight = %s, tare_weight = %s, net_weight = %s, confidence_score = %s, ocr_provider = %s, raw_ocr_text = %s WHERE id = %s" if postgres_enabled() else "UPDATE tickets SET ticket_id = ?, ticket_date = ?, quarry_name = ?, sold_to = ?, material_type = ?, gross_weight = ?, tare_weight = ?, net_weight = ?, confidence_score = ?, ocr_provider = ?, raw_ocr_text = ? WHERE id = ?"
+                        conn.execute(query, p_params)
+                    st.cache_data.clear()
+                    st.success("Rotated Right 90° & re-scanned!")
+                    st.rerun()
 
         st.caption("Need 100% Google Vision accuracy for a tricky ticket?")
         if st.button("⚡ Re-Scan this Ticket with Google Vision API", key=f"rescan_google_{selected_id}"):

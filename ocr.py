@@ -1212,29 +1212,62 @@ def _extract_with_easyocr(image_path: Path) -> Tuple[Dict[str, str], float]:
     if reader is None:
         raise RuntimeError("EasyOCR is not installed or failed to initialize.")
 
+    import io
+    from PIL import Image as PilImage, ImageOps
+
     logger.info("easyocr_request_start image=%s", image_path)
-    results = reader.readtext(str(image_path), detail=1)
+    source_img = PilImage.open(image_path)
+    source_img.load()
+    source_img = ImageOps.exif_transpose(source_img)
 
-    # Sort results by vertical position
-    results = sorted(results, key=lambda item: item[0][0][1] if item[0] else 0)
-    lines: List[str] = []
-    conf_scores: List[float] = []
-    for bbox, text, conf in results:
-        t_clean = str(text or "").strip()
-        if t_clean:
-            lines.append(t_clean)
-            conf_scores.append(float(conf))
+    angles = (0, 90, 180, 270)
+    best_candidate: Optional[Tuple[Dict[str, str], float, int, str, int]] = None
 
-    raw_text = "\n".join(lines)
-    parsed = parse_ticket_text(raw_text)
-    _sanitize_untrusted_fields(parsed)
-    parsed["source_site"] = parsed.get("quarry_name", "")
-    parsed["destination_site"] = parsed.get("deliver_to", "")
-    parsed["__raw_text"] = raw_text
+    for angle in angles:
+        candidate_img = source_img if angle == 0 else source_img.rotate(angle, expand=True)
+        prep_img = _preprocess_for_ocr(candidate_img)
 
-    avg_conf = (sum(conf_scores) / float(len(conf_scores))) if conf_scores else 0.5
-    logger.info("easyocr_request_success image=%s conf=%.2f lines=%d", image_path, avg_conf, len(lines))
-    return parsed, avg_conf
+        img_byte_arr = io.BytesIO()
+        prep_img.save(img_byte_arr, format="PNG")
+        img_bytes = img_byte_arr.getvalue()
+
+        try:
+            results = reader.readtext(img_bytes, detail=1)
+        except Exception as e_err:
+            logger.warning("easyocr_angle_failed angle=%d error=%s", angle, e_err)
+            continue
+
+        results = sorted(results, key=lambda item: item[0][0][1] if item[0] else 0)
+        lines: List[str] = []
+        conf_scores: List[float] = []
+        for bbox, text, conf in results:
+            t_clean = str(text or "").strip()
+            if t_clean:
+                lines.append(t_clean)
+                conf_scores.append(float(conf))
+
+        raw_text = "\n".join(lines)
+        parsed = parse_ticket_text(raw_text)
+        _sanitize_untrusted_fields(parsed)
+
+        score = _tesseract_candidate_score(raw_text, parsed)
+        avg_conf = (sum(conf_scores) / float(len(conf_scores))) if conf_scores else 0.5
+
+        if best_candidate is None or score > best_candidate[4]:
+            best_candidate = (parsed, avg_conf, angle, raw_text, score)
+
+    if best_candidate is not None:
+        best_parsed, best_conf, best_angle, best_raw_text, _ = best_candidate
+        _persist_upright_image(image_path, source_img, best_angle)
+        best_parsed["source_site"] = best_parsed.get("quarry_name", "")
+        best_parsed["destination_site"] = best_parsed.get("deliver_to", "")
+        best_parsed["__raw_text"] = best_raw_text
+        source_img.close()
+        logger.info("easyocr_request_success image=%s conf=%.2f angle=%d", image_path, best_conf, best_angle)
+        return best_parsed, best_conf
+
+    source_img.close()
+    raise RuntimeError("EasyOCR failed to extract orientation candidates.")
 
 
 def extract_ticket_data(image_path: Path, force_provider: Optional[str] = None) -> Tuple[Dict[str, str], float, str]:
