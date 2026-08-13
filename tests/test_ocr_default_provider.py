@@ -57,26 +57,20 @@ def test_extract_ticket_data_honors_forced_pytesseract(monkeypatch):
     assert captured["used"] == "pytesseract"
 
 
-def test_extract_pdf_ticket_data_orients_before_one_easyocr_pass(monkeypatch):
+def test_extract_pdf_ticket_data_uses_pytesseract(monkeypatch):
     captured = {}
 
-    def fake_orient(path: Path):
-        captured["oriented"] = path
-        return {}
-
-    def fake_easyocr(path: Path, angles, max_long_side):
-        captured["easyocr"] = (path, angles, max_long_side)
+    def fake_pytesseract(path: Path):
+        captured["pytesseract"] = path
         return {"ticket_id": "123", "__raw_text": "ticket"}, 0.9
 
-    monkeypatch.setattr(ocr, "_orient_ticket_with_tesseract", fake_orient)
-    monkeypatch.setattr(ocr, "_extract_with_easyocr", fake_easyocr)
+    monkeypatch.setattr(ocr, "_extract_with_pytesseract", fake_pytesseract)
 
     image_path = Path("ticket.jpg")
     result = ocr.extract_pdf_ticket_data(image_path)
 
-    assert result[2] == "easyocr"
-    assert captured["oriented"] == image_path
-    assert captured["easyocr"] == (image_path, (0,), 1600)
+    assert result[2] == "pytesseract"
+    assert captured["pytesseract"] == image_path
 
 
 def test_merge_pdf_ocr_fields_replaces_bad_weight_with_consistent_triplet():

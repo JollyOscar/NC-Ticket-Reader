@@ -1260,9 +1260,21 @@ def _extract_with_pytesseract(image_path: Path) -> Tuple[Dict[str, str], float]:
     primary_config = "--oem 1 --psm 11"
     source_image = PilImage.open(image_path)
     source_image.load()
+
+    def read_text(candidate: Any, _angle: int) -> str:
+        try:
+            return pytesseract.image_to_string(
+                candidate,
+                config=primary_config,
+                timeout=12,
+            )
+        except RuntimeError as exc:
+            logger.warning("pytesseract_text_timeout image=%s error=%s", image_path, exc)
+            return ""
+
     img, raw_text, parsed, orientation_score, orientation_angle = _select_tesseract_candidate(
         source_image,
-        lambda candidate, angle: pytesseract.image_to_string(candidate, config=primary_config),
+        read_text,
     )
     _persist_upright_image(image_path, source_image, orientation_angle)
     source_image.close()
@@ -1270,7 +1282,11 @@ def _extract_with_pytesseract(image_path: Path) -> Tuple[Dict[str, str], float]:
 
     if _parsed_field_score(parsed) <= 2:
         fallback_config = "--oem 1 --psm 6"
-        fallback_text = pytesseract.image_to_string(img, config=fallback_config)
+        try:
+            fallback_text = pytesseract.image_to_string(img, config=fallback_config, timeout=12)
+        except RuntimeError as exc:
+            logger.warning("pytesseract_fallback_timeout image=%s error=%s", image_path, exc)
+            fallback_text = ""
         fallback_parsed = parse_ticket_text(fallback_text)
         if _parsed_field_score(fallback_parsed) > _parsed_field_score(parsed):
             raw_text = fallback_text
@@ -1280,7 +1296,7 @@ def _extract_with_pytesseract(image_path: Path) -> Tuple[Dict[str, str], float]:
     try:
         data = pytesseract.image_to_data(
             img, config=selected_config,
-            output_type=pytesseract.Output.DICT,
+            output_type=pytesseract.Output.DICT, timeout=12,
         )
         confs = [float(c) for c in data.get("conf", []) if str(c).replace(".", "", 1).isdigit() and float(c) >= 0]
         avg_conf = round(sum(confs) / (len(confs) * 100.0), 2) if confs else 0.0
@@ -1412,29 +1428,22 @@ def _extract_with_easyocr(
 
 
 def extract_pdf_ticket_data(image_path: Path) -> Tuple[Dict[str, str], float, str]:
-    """Use Tesseract for PDF-page orientation, then EasyOCR for handwriting."""
+    """Extract PDF tickets with bounded local OCR so batches cannot stall."""
     logger.info("pdf_ticket_extract_start image=%s", image_path)
-    tesseract_fields: Dict[str, str] = {}
     try:
-        tesseract_fields = _orient_ticket_with_tesseract(image_path)
+        parsed, confidence = _extract_with_pytesseract(image_path)
+        logger.info("pdf_ticket_extract_success image=%s provider=pytesseract", image_path)
+        return parsed, confidence, "pytesseract"
     except Exception as exc:
-        logger.warning("pdf_ticket_orientation_failed image=%s error=%s", image_path, exc)
-
-    try:
-        parsed, confidence = _extract_with_easyocr(
-            image_path,
-            angles=(0,),
-            max_long_side=1600,
-        )
-        parsed = _merge_pdf_ocr_fields(parsed, tesseract_fields)
-        logger.info("pdf_ticket_extract_success image=%s provider=easyocr", image_path)
-        return parsed, confidence, "easyocr"
-    except Exception as exc:
-        logger.warning("pdf_ticket_easyocr_failed image=%s error=%s", image_path, exc)
-
-    parsed, confidence = _extract_with_pytesseract(image_path)
-    logger.info("pdf_ticket_extract_success image=%s provider=pytesseract_fallback", image_path)
-    return parsed, confidence, "pytesseract_fallback"
+        logger.exception("pdf_ticket_extract_failed image=%s error=%s", image_path, exc)
+        empty = {
+            "ticket_id": "", "ticket_date": "", "job_no": "", "quarry_name": "",
+            "truck_or_plate": "", "trucker": "", "sold_to": "", "deliver_to": "",
+            "material_type": "", "received_by": "", "gross_weight": "",
+            "tare_weight": "", "net_weight": "", "source_site": "", "destination_site": "",
+            "__raw_text": "", "__ocr_warning": "PDF page OCR timed out. Review and re-scan the saved ticket image.",
+        }
+        return empty, 0.0, "pytesseract_timeout"
 
 
 def extract_ticket_data(image_path: Path, force_provider: Optional[str] = None) -> Tuple[Dict[str, str], float, str]:
