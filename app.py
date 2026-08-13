@@ -109,6 +109,62 @@ def get_master_data_canonical_names() -> Dict[str, List[str]]:
     return names
 
 
+def match_master_entity(entity_type: str, raw_text: str) -> Tuple[str, str]:
+    """Fuzzy/token match raw text to canonical master data name and system ID."""
+    import difflib
+
+    raw_str = str(raw_text or "").strip()
+    if not raw_str:
+        return ("", "")
+
+    lookups = load_master_data()
+    norm_input = _normalize_lookup_value(raw_str)
+    canonical_names = get_master_data_canonical_names().get(entity_type, [])
+
+    # 1. Direct exact / normalized match
+    direct_id = lookup_system_id(entity_type, raw_str, lookups)
+    if direct_id:
+        for name in canonical_names:
+            if lookup_system_id(entity_type, name, lookups) == direct_id:
+                return (name, direct_id)
+
+    # 2. Token / Substring / Fuzzy match
+    if not canonical_names or len(norm_input) < 2:
+        return (raw_str, direct_id)
+
+    best_candidate = ""
+    best_score = 0.0
+    best_sys_id = ""
+
+    for canonical_name in canonical_names:
+        sys_id = lookup_system_id(entity_type, canonical_name, lookups)
+        norm_canonical = _normalize_lookup_value(canonical_name)
+
+        if norm_input and norm_canonical.startswith(norm_input):
+            score = 0.85 + (len(norm_input) / float(len(norm_canonical)) * 0.1)
+            if score > best_score:
+                best_score = score
+                best_candidate = canonical_name
+                best_sys_id = sys_id
+        elif norm_input and norm_input in norm_canonical:
+            score = 0.60 + (len(norm_input) / float(len(norm_canonical)) * 0.2)
+            if score > best_score:
+                best_score = score
+                best_candidate = canonical_name
+                best_sys_id = sys_id
+
+        ratio = difflib.SequenceMatcher(None, norm_input, norm_canonical).ratio()
+        if ratio > 0.65 and ratio > best_score:
+            best_score = ratio
+            best_candidate = canonical_name
+            best_sys_id = sys_id
+
+    if best_candidate and best_score >= 0.50:
+        return (best_candidate, best_sys_id)
+
+    return (raw_str, direct_id)
+
+
 def format_export_date(value: str) -> str:
     raw_date = str(value or "").strip()
     if not raw_date:
@@ -533,6 +589,22 @@ def insert_ticket(fields: Dict[str, str], confidence_score: float, image_path: s
     status = "auto_ready" if confidence_score >= 0.85 else "needs_review"
     now = dt.datetime.utcnow().isoformat()
 
+    # Apply fuzzy master data resolution to extracted fields
+    if fields.get("sold_to"):
+        c_name, _ = match_master_entity("customer", fields["sold_to"])
+        if c_name:
+            fields["sold_to"] = c_name
+
+    if fields.get("quarry_name"):
+        q_name, _ = match_master_entity("quarry", fields["quarry_name"])
+        if q_name:
+            fields["quarry_name"] = q_name
+
+    if fields.get("material_type"):
+        m_name, _ = match_master_entity("material", fields["material_type"])
+        if m_name:
+            fields["material_type"] = m_name
+
     with get_conn() as conn:
         params = (
             fields.get("ticket_id", ""),
@@ -669,10 +741,18 @@ def ticket_exists(ticket_id: str, ticket_date: str, exclude_id: int) -> bool:
 
 def resolve_system_ids(data: Dict[str, str]) -> Dict[str, str]:
     lookups = load_master_data()
+    cust_val = data.get("sold_to", "")
+    quarry_val = data.get("quarry_name", "")
+    mat_val = data.get("material_type", "")
+
+    _, cust_id = match_master_entity("customer", cust_val)
+    _, quarry_id = match_master_entity("quarry", quarry_val)
+    _, mat_id = match_master_entity("material", mat_val)
+
     return {
-        "customer_id": lookup_system_id("customer", data.get("sold_to", ""), lookups),
-        "quarry_id": lookup_system_id("quarry", data.get("quarry_name", ""), lookups),
-        "material_id": lookup_system_id("material", data.get("material_type", ""), lookups),
+        "customer_id": cust_id or lookup_system_id("customer", cust_val, lookups),
+        "quarry_id": quarry_id or lookup_system_id("quarry", quarry_val, lookups),
+        "material_id": mat_id or lookup_system_id("material", mat_val, lookups),
     }
 
 
