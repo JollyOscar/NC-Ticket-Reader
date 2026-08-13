@@ -1229,7 +1229,7 @@ def render_review_tab() -> None:
                     auto_ready_candidates.append(r)
 
     if auto_ready_candidates:
-        if st.button(f"⚡ Bulk Approve {len(auto_ready_candidates)} Auto-Ready Ticket(s)", key="bulk_approve_btn"):
+        if st.button(f"Bulk Approve {len(auto_ready_candidates)} Auto-Ready Ticket(s)", key="bulk_approve_btn"):
             approved_cnt = 0
             for r in auto_ready_candidates:
                 err = approve_ticket(r["id"], dict(r), reviewer)
@@ -1344,7 +1344,7 @@ def render_review_tab() -> None:
         st.caption("Image orientation correction:")
         rot_c1, rot_c2 = st.columns(2)
         with rot_c1:
-            if st.button("🔄 Rotate Left 90°", key=f"rot_left_{selected_id}"):
+            if st.button("Rotate Left 90°", key=f"rot_left_{selected_id}"):
                 file_name = Path(str(row["image_path"])).name
                 full_image_path = UPLOAD_DIR / file_name
                 if not full_image_path.exists():
@@ -1386,7 +1386,7 @@ def render_review_tab() -> None:
                     st.rerun()
 
         with rot_c2:
-            if st.button("🔄 Rotate Right 90°", key=f"rot_right_{selected_id}"):
+            if st.button("Rotate Right 90°", key=f"rot_right_{selected_id}"):
                 file_name = Path(str(row["image_path"])).name
                 full_image_path = UPLOAD_DIR / file_name
                 if not full_image_path.exists():
@@ -1428,7 +1428,7 @@ def render_review_tab() -> None:
                     st.rerun()
 
         st.caption("Need 100% Google Vision accuracy for a tricky ticket?")
-        if st.button("⚡ Re-Scan this Ticket with Google Vision API", key=f"rescan_google_{selected_id}"):
+        if st.button("Re-Scan this Ticket with Google Vision API", key=f"rescan_google_{selected_id}"):
             with st.spinner("Scanning ticket image with Google Vision..."):
                 file_name = Path(str(row["image_path"])).name
                 full_image_path = UPLOAD_DIR / file_name
@@ -1519,43 +1519,27 @@ def render_review_tab() -> None:
                 edited["ticket_date"] = selected_date.isoformat() if selected_date else ""
                 edited["job_no"]      = st.text_input("Job No.", value=row["job_no"] or "")
             with c2:
+                # Quarry (Text input + predictive suggestion helper)
                 captured_q = str(row["quarry_name"] or "").strip()
-                quarry_options = list(master_quarries)
-                if captured_q and captured_q not in quarry_options:
-                    quarry_options.insert(0, captured_q)
-                quarry_options.append("✏️ Custom Quarry...")
+                q_helper_opts = ["-- Click to pick predictive quarry --"] + list(master_quarries)
+                sel_q_pred = st.selectbox("Quarry Predictive Suggestions", q_helper_opts, index=0, key=f"q_pred_{selected_id}")
+                q_default = sel_q_pred if sel_q_pred != "-- Click to pick predictive quarry --" else captured_q
+                edited["quarry_name"] = st.text_input("Quarry", value=q_default, key=f"q_input_{selected_id}")
 
-                q_idx = quarry_options.index(captured_q) if captured_q in quarry_options else 0
-                sel_q = st.selectbox("Quarry", quarry_options, index=q_idx, key=f"q_sel_{selected_id}")
-                if sel_q == "✏️ Custom Quarry...":
-                    edited["quarry_name"] = st.text_input("Enter Custom Quarry Name", value=captured_q, key=f"q_custom_{selected_id}")
-                else:
-                    edited["quarry_name"] = sel_q
-
+                # Customer (Text input + predictive suggestion helper)
                 captured_cust = str(row["sold_to"] or "").strip()
-                cust_options = list(master_customers)
-                if captured_cust and captured_cust not in cust_options:
-                    cust_options.insert(0, captured_cust)
-                cust_options.append("✏️ Custom Customer...")
+                c_helper_opts = ["-- Click to pick predictive customer --"] + list(master_customers)
+                sel_c_pred = st.selectbox("Customer Predictive Suggestions", c_helper_opts, index=0, key=f"c_pred_{selected_id}")
+                c_default = sel_c_pred if sel_c_pred != "-- Click to pick predictive customer --" else captured_cust
+                edited["sold_to"] = st.text_input("Customer (Sold To)", value=c_default, key=f"cust_input_{selected_id}")
 
-                c_idx = cust_options.index(captured_cust) if captured_cust in cust_options else 0
-                sel_cust = st.selectbox("Customer (Sold To)", cust_options, index=c_idx, key=f"cust_sel_{selected_id}")
-                if sel_cust == "✏️ Custom Customer...":
-                    edited["sold_to"] = st.text_input("Enter Custom Customer Name", value=captured_cust, key=f"cust_custom_{selected_id}")
-                else:
-                    edited["sold_to"] = sel_cust
-
+                # Material (Text input + predictive suggestion helper)
                 captured_mat = str(row["material_type"] or "").strip()
                 common_mats = ["Crusher Run", "3/4 Clear", "Hot Mix", "Stone Dust", "Rip Rap", "Pit Run", "Fill", "Aggregate", "Asphalt"]
-                mat_options = list(dict.fromkeys(([captured_mat] if captured_mat else []) + master_materials + common_mats))
-                mat_options.append("✏️ Custom Material...")
-
-                m_idx = mat_options.index(captured_mat) if captured_mat in mat_options else 0
-                sel_mat = st.selectbox("Material", mat_options, index=m_idx, key=f"mat_sel_{selected_id}")
-                if sel_mat == "✏️ Custom Material...":
-                    edited["material_type"] = st.text_input("Enter Custom Material Name", value=captured_mat, key=f"mat_custom_{selected_id}")
-                else:
-                    edited["material_type"] = sel_mat
+                mat_helper_opts = ["-- Click to pick predictive material --"] + list(dict.fromkeys(master_materials + common_mats))
+                sel_m_pred = st.selectbox("Material Predictive Suggestions", mat_helper_opts, index=0, key=f"m_pred_{selected_id}")
+                m_default = sel_m_pred if sel_m_pred != "-- Click to pick predictive material --" else captured_mat
+                edited["material_type"] = st.text_input("Material", value=m_default, key=f"mat_input_{selected_id}")
 
             st.markdown("**Weights**")
             w1, w2, w3 = st.columns(3)
