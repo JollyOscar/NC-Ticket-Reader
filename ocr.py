@@ -1220,12 +1220,20 @@ def _extract_with_easyocr(image_path: Path) -> Tuple[Dict[str, str], float]:
     source_img.load()
     source_img = ImageOps.exif_transpose(source_img)
 
-    angles = (0, 90, 180, 270)
+    angles = [0]
+    if source_img.width > source_img.height * 1.2:
+        angles.append(270)
+
     best_candidate: Optional[Tuple[Dict[str, str], float, int, str, int]] = None
 
     for angle in angles:
         candidate_img = source_img if angle == 0 else source_img.rotate(angle, expand=True)
         prep_img = _preprocess_for_ocr(candidate_img)
+
+        w, h = prep_img.size
+        if max(w, h) > 1800:
+            scale = 1800.0 / float(max(w, h))
+            prep_img = prep_img.resize((int(w * scale), int(h * scale)), getattr(PilImage, "LANCZOS", 3))
 
         img_byte_arr = io.BytesIO()
         prep_img.save(img_byte_arr, format="PNG")
@@ -1255,6 +1263,9 @@ def _extract_with_easyocr(image_path: Path) -> Tuple[Dict[str, str], float]:
 
         if best_candidate is None or score > best_candidate[4]:
             best_candidate = (parsed, avg_conf, angle, raw_text, score)
+
+        if score >= 300:
+            break
 
     if best_candidate is not None:
         best_parsed, best_conf, best_angle, best_raw_text, _ = best_candidate
