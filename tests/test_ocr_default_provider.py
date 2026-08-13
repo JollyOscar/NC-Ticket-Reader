@@ -62,6 +62,7 @@ def test_extract_pdf_ticket_data_orients_before_one_easyocr_pass(monkeypatch):
 
     def fake_orient(path: Path):
         captured["oriented"] = path
+        return {}
 
     def fake_easyocr(path: Path, angles, max_long_side):
         captured["easyocr"] = (path, angles, max_long_side)
@@ -76,6 +77,25 @@ def test_extract_pdf_ticket_data_orients_before_one_easyocr_pass(monkeypatch):
     assert result[2] == "easyocr"
     assert captured["oriented"] == image_path
     assert captured["easyocr"] == (image_path, (0,), 1600)
+
+
+def test_merge_pdf_ocr_fields_replaces_bad_weight_with_consistent_triplet():
+    easyocr_fields = {
+        "sold_to": "Pottert Lime Ltd",
+        "gross_weight": "1680",
+        "tare_weight": "",
+        "net_weight": "",
+    }
+    tesseract_fields = {
+        "gross_weight": "26000",
+        "tare_weight": "11680",
+        "net_weight": "14320",
+    }
+
+    merged = ocr._merge_pdf_ocr_fields(easyocr_fields, tesseract_fields)
+
+    assert merged["sold_to"] == "Pottert Lime Ltd"
+    assert (merged["gross_weight"], merged["tare_weight"], merged["net_weight"]) == ("26000", "11680", "14320")
 
 
 def test_configure_tesseract_uses_system_binary_on_linux(monkeypatch):

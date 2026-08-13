@@ -1036,11 +1036,12 @@ def _preprocess_for_ocr(img: Any) -> Any:
     """Normalize ticket images without relying on document-specific content."""
     from PIL import Image as PilImage, ImageEnhance, ImageFilter, ImageOps
 
+    img = ImageOps.exif_transpose(img)
     if hasattr(img, "mode") and img.mode == "RGB":
-        r, g, b = img.split()
-        img = ImageOps.exif_transpose(g)
+        _, green, _ = img.split()
+        img = green
     else:
-        img = ImageOps.exif_transpose(img).convert("L")
+        img = img.convert("L")
 
     max_long_side = 3200
     min_short_side = 1400
@@ -1129,8 +1130,8 @@ def _persist_upright_image(image_path: Path, source_image: Any, angle: int) -> N
         upright.close()
 
 
-def _orient_ticket_with_tesseract(image_path: Path) -> int:
-    """Persist the most readable cardinal orientation for a ticket image."""
+def _orient_ticket_with_tesseract(image_path: Path) -> Dict[str, str]:
+    """Persist the most readable cardinal orientation and retain its fields."""
     import pytesseract
     from PIL import Image as PilImage
 
@@ -1141,7 +1142,7 @@ def _orient_ticket_with_tesseract(image_path: Path) -> int:
     source_image = PilImage.open(image_path)
     source_image.load()
     try:
-        _, raw_text, _, score, angle = _select_tesseract_candidate(
+        _, raw_text, parsed, score, angle = _select_tesseract_candidate(
             source_image,
             lambda candidate, _angle: pytesseract.image_to_string(candidate, config="--oem 1 --psm 11"),
         )
@@ -1156,7 +1157,39 @@ def _orient_ticket_with_tesseract(image_path: Path) -> int:
         _form_label_hits(raw_text),
         score,
     )
-    return angle
+    parsed["__raw_text"] = raw_text
+    return parsed
+
+
+def _weight_triplet_is_consistent(fields: Dict[str, str]) -> bool:
+    gross = str(fields.get("gross_weight", ""))
+    tare = str(fields.get("tare_weight", ""))
+    net = str(fields.get("net_weight", ""))
+    return (
+        gross.isdigit()
+        and tare.isdigit()
+        and net.isdigit()
+        and int(gross) == int(tare) + int(net)
+    )
+
+
+def _merge_pdf_ocr_fields(easyocr_fields: Dict[str, str], tesseract_fields: Dict[str, str]) -> Dict[str, str]:
+    """Keep handwriting-first fields while accepting only verified numeric fixes."""
+    merged = dict(easyocr_fields)
+    if _weight_triplet_is_consistent(tesseract_fields) and not _weight_triplet_is_consistent(merged):
+        for field in ("gross_weight", "tare_weight", "net_weight"):
+            merged[field] = tesseract_fields[field]
+
+    for field in (
+        "ticket_id", "ticket_date", "job_no", "quarry_name", "truck_or_plate",
+        "trucker", "sold_to", "deliver_to", "material_type", "received_by",
+    ):
+        if not merged.get(field) and tesseract_fields.get(field):
+            merged[field] = tesseract_fields[field]
+
+    merged["source_site"] = merged.get("quarry_name", "")
+    merged["destination_site"] = merged.get("deliver_to", "")
+    return merged
 
 
 def _extract_spatial_fields(words: List[Dict]) -> Dict[str, str]:
@@ -1381,8 +1414,9 @@ def _extract_with_easyocr(
 def extract_pdf_ticket_data(image_path: Path) -> Tuple[Dict[str, str], float, str]:
     """Use Tesseract for PDF-page orientation, then EasyOCR for handwriting."""
     logger.info("pdf_ticket_extract_start image=%s", image_path)
+    tesseract_fields: Dict[str, str] = {}
     try:
-        _orient_ticket_with_tesseract(image_path)
+        tesseract_fields = _orient_ticket_with_tesseract(image_path)
     except Exception as exc:
         logger.warning("pdf_ticket_orientation_failed image=%s error=%s", image_path, exc)
 
@@ -1392,6 +1426,7 @@ def extract_pdf_ticket_data(image_path: Path) -> Tuple[Dict[str, str], float, st
             angles=(0,),
             max_long_side=1600,
         )
+        parsed = _merge_pdf_ocr_fields(parsed, tesseract_fields)
         logger.info("pdf_ticket_extract_success image=%s provider=easyocr", image_path)
         return parsed, confidence, "easyocr"
     except Exception as exc:

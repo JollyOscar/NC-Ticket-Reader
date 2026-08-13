@@ -139,8 +139,10 @@ def match_master_entity(entity_type: str, raw_text: str) -> Tuple[str, str]:
     canonical_names = get_master_data_canonical_names().get(entity_type, [])
     id_map = get_master_data_id_map().get(entity_type, {})
 
-    # 1. Direct exact / normalized match (O(1))
-    direct_id = lookup_system_id(entity_type, raw_str, lookups)
+    # 1. Direct exact / normalized match (O(1)). Do not use
+    # lookup_system_id here: its material fallback intentionally supplies a
+    # generic export ID for unknown values, which is not an exact OCR match.
+    direct_id = lookups.get(entity_type, {}).get(norm_input, "")
     if direct_id:
         canonical_name = id_map.get(direct_id)
         if canonical_name:
@@ -1560,26 +1562,45 @@ def render_review_tab() -> None:
                 edited["ticket_date"] = selected_date.isoformat() if selected_date else ""
                 edited["job_no"]      = st.text_input("Job No.", value=row["job_no"] or "")
             with c2:
-                # Quarry (Text input + predictive suggestion helper)
                 captured_q = str(row["quarry_name"] or "").strip()
-                q_helper_opts = ["-- Click to pick predictive quarry --"] + list(master_quarries)
-                sel_q_pred = st.selectbox("Quarry Predictive Suggestions", q_helper_opts, index=0, key=f"q_pred_{selected_id}")
-                q_default = sel_q_pred if sel_q_pred != "-- Click to pick predictive quarry --" else captured_q
+                suggested_q, _ = match_master_entity("quarry", captured_q)
+                q_index = master_quarries.index(suggested_q) if suggested_q in master_quarries else None
+                sel_q_pred = st.selectbox(
+                    "Suggested Quarry",
+                    master_quarries,
+                    index=q_index,
+                    placeholder="Choose a quarry",
+                    key=f"q_pred_{selected_id}",
+                )
+                q_default = sel_q_pred or captured_q
                 edited["quarry_name"] = st.text_input("Quarry", value=q_default, key=f"q_input_{selected_id}")
 
-                # Customer (Text input + predictive suggestion helper)
                 captured_cust = str(row["sold_to"] or "").strip()
-                c_helper_opts = ["-- Click to pick predictive customer --"] + list(master_customers)
-                sel_c_pred = st.selectbox("Customer Predictive Suggestions", c_helper_opts, index=0, key=f"c_pred_{selected_id}")
-                c_default = sel_c_pred if sel_c_pred != "-- Click to pick predictive customer --" else captured_cust
+                suggested_cust, _ = match_master_entity("customer", captured_cust)
+                c_index = master_customers.index(suggested_cust) if suggested_cust in master_customers else None
+                sel_c_pred = st.selectbox(
+                    "Suggested Customer",
+                    master_customers,
+                    index=c_index,
+                    placeholder="Choose a customer",
+                    key=f"c_pred_{selected_id}",
+                )
+                c_default = sel_c_pred or captured_cust
                 edited["sold_to"] = st.text_input("Customer (Sold To)", value=c_default, key=f"cust_input_{selected_id}")
 
-                # Material (Text input + predictive suggestion helper)
                 captured_mat = str(row["material_type"] or "").strip()
                 common_mats = ["Crusher Run", "3/4 Clear", "Hot Mix", "Stone Dust", "Rip Rap", "Pit Run", "Fill", "Aggregate", "Asphalt"]
-                mat_helper_opts = ["-- Click to pick predictive material --"] + list(dict.fromkeys(master_materials + common_mats))
-                sel_m_pred = st.selectbox("Material Predictive Suggestions", mat_helper_opts, index=0, key=f"m_pred_{selected_id}")
-                m_default = sel_m_pred if sel_m_pred != "-- Click to pick predictive material --" else captured_mat
+                mat_helper_opts = list(dict.fromkeys(master_materials + common_mats))
+                suggested_mat, _ = match_master_entity("material", captured_mat)
+                m_index = mat_helper_opts.index(suggested_mat) if suggested_mat in mat_helper_opts else None
+                sel_m_pred = st.selectbox(
+                    "Suggested Material",
+                    mat_helper_opts,
+                    index=m_index,
+                    placeholder="Choose a material",
+                    key=f"m_pred_{selected_id}",
+                )
+                m_default = sel_m_pred or captured_mat
                 edited["material_type"] = st.text_input("Material", value=m_default, key=f"mat_input_{selected_id}")
 
             st.markdown("**Weights**")

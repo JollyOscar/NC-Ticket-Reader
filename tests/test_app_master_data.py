@@ -39,6 +39,19 @@ def test_match_master_entity_corrects_ocr_spelling_to_dropdown_option(monkeypatc
     assert app.match_master_entity("quarry", "Long Piont") == ("Long Point", "QUARRY-019")
 
 
+def test_match_master_entity_does_not_treat_unknown_material_as_exact_aggregate(monkeypatch, tmp_path):
+    master_data = tmp_path / "master_data.csv"
+    master_data.write_text(
+        "entity_type,name,system_id,aliases\n"
+        "material,Aggregate,MAT-020,Type 1\n"
+        "material,Asphalt,MAT-021,Hot Mix\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(app, "MASTER_DATA_PATH", master_data)
+
+    assert app.match_master_entity("material", "unreadable scribble") == ("unreadable scribble", "")
+
+
 def test_select_pdf_ticket_image_uses_largest_embedded_image():
     def embedded_image(width, height):
         output = io.BytesIO()
