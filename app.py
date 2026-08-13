@@ -94,7 +94,7 @@ def format_export_date(value: str) -> str:
         parsed = dt.date.fromisoformat(raw_date)
     except ValueError:
         return raw_date
-    return parsed.strftime(os.getenv("NETSUITE_DATE_FORMAT", "%Y-%m-%d"))
+    return parsed.strftime(os.getenv("NETSUITE_DATE_FORMAT", "%m/%d/%Y"))
 
 
 def current_actor() -> str:
@@ -1294,6 +1294,116 @@ def render_history_tab() -> None:
         st.info("No processed tickets yet.")
         return
 
+    history_view = st.radio(
+        "View mode",
+        ["Individual Ticket", "Browse by Customer"],
+        horizontal=True,
+        key="history_view_mode",
+    )
+
+    if history_view == "Browse by Customer":
+        _render_browse_by_customer(completed)
+    else:
+        _render_individual_ticket_history(completed)
+
+    st.divider()
+    st.subheader("Export Batch Archive")
+    _render_export_batch_archive()
+
+
+def _render_browse_by_customer(completed: list) -> None:
+    """Group approved tickets by customer and date for browsing and batch download."""
+    import io
+    import zipfile
+
+    approved = [r for r in completed if r["review_status"] == "approved"]
+    if not approved:
+        st.info("No approved tickets to browse.")
+        return
+
+    # Build customer → date → tickets index
+    by_customer: Dict[str, List[Any]] = {}
+    for row in approved:
+        customer = str(row["sold_to"] or "Unknown Customer").strip()
+        by_customer.setdefault(customer, []).append(row)
+
+    customer_names = sorted(by_customer.keys(), key=str.lower)
+    selected_customer = st.selectbox(
+        "Customer",
+        customer_names,
+        key="browse_customer_select",
+    )
+    if not selected_customer:
+        return
+
+    customer_tickets = by_customer[selected_customer]
+    # Sort by date descending
+    customer_tickets.sort(key=lambda r: str(r["ticket_date"] or ""), reverse=True)
+
+    # Date filter
+    available_dates = sorted(
+        {str(r["ticket_date"] or "No date") for r in customer_tickets}, reverse=True
+    )
+    selected_dates = st.multiselect(
+        "Filter by date (leave empty for all)",
+        available_dates,
+        key="browse_customer_date_filter",
+    )
+    if selected_dates:
+        customer_tickets = [
+            r for r in customer_tickets
+            if str(r["ticket_date"] or "No date") in selected_dates
+        ]
+
+    st.caption(f"{len(customer_tickets)} ticket(s) for **{selected_customer}**")
+    st.dataframe(
+        [
+            {
+                "Ticket #": row["ticket_id"],
+                "Date": row["ticket_date"],
+                "Quarry": row["quarry_name"],
+                "Material": row["material_type"],
+                "Net": row["net_weight"],
+                "Exported": row["exported_at"] or "No",
+            }
+            for row in customer_tickets
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # Batch download as ZIP
+    if st.button(
+        f"Download all {len(customer_tickets)} ticket image(s) as ZIP",
+        key="browse_customer_batch_download",
+    ):
+        zip_buffer = io.BytesIO()
+        included = 0
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            for row in customer_tickets:
+                image_bytes = load_stored_file(row["image_path"])
+                if image_bytes:
+                    date_part = str(row["ticket_date"] or "no_date").replace("/", "-")
+                    ticket_num = str(row["ticket_id"] or row["id"])
+                    ext = Path(str(row["image_path"])).suffix or ".png"
+                    filename = f"{date_part}/{ticket_num}{ext}"
+                    zf.writestr(filename, image_bytes)
+                    included += 1
+        if included:
+            safe_name = re.sub(r"[^\w\- ]", "_", selected_customer)[:60]
+            st.download_button(
+                f"Save ZIP ({included} image(s))",
+                data=zip_buffer.getvalue(),
+                file_name=f"{safe_name}_tickets.zip",
+                mime="application/zip",
+                key="browse_customer_zip_download",
+            )
+        else:
+            st.warning("No ticket images could be loaded for this customer.")
+
+
+def _render_individual_ticket_history(completed: list) -> None:
+    """Original individual ticket history view."""
     options = {
         f"#{row['id']} | {row['ticket_id'] or 'No ticket number'} | "
         f"{row['ticket_date'] or 'No date'} | {row['review_status']} | "
@@ -1350,8 +1460,9 @@ def render_history_tab() -> None:
             st.success("Replacement image saved. Ticket reopened for review.")
             st.rerun()
 
-    st.divider()
-    st.subheader("Export Batch Archive")
+
+def _render_export_batch_archive() -> None:
+    """Display export batch archive with batch reopening capability."""
     batches = fetch_export_batches()
     if not batches:
         st.info("No export batches have been created since batch archiving was enabled.")
