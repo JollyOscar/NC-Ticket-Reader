@@ -1270,7 +1270,21 @@ def render_export_tab() -> None:
         if not out_path:
             st.info("No unexported approved tickets available.")
         else:
-            st.success(f"Exported to {out_path}")
+            st.session_state["latest_export_download"] = {
+                "file_name": out_path.name,
+                "data": out_path.read_bytes(),
+            }
+            st.success("Export created. Download the CSV below.")
+
+    export_download = st.session_state.get("latest_export_download")
+    if export_download:
+        st.download_button(
+            "Download exported CSV",
+            data=export_download["data"],
+            file_name=export_download["file_name"],
+            mime="text/csv",
+            type="primary",
+        )
 
 
 def render_history_tab() -> None:
