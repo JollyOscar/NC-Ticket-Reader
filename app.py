@@ -83,7 +83,16 @@ def load_master_data() -> Dict[str, Dict[str, str]]:
 
 def lookup_system_id(entity_type: str, value: str, lookups: Optional[Dict[str, Dict[str, str]]] = None) -> str:
     source = lookups if lookups is not None else load_master_data()
-    return source.get(entity_type, {}).get(_normalize_lookup_value(value), "")
+    norm = _normalize_lookup_value(value)
+    found = source.get(entity_type, {}).get(norm, "")
+    if found:
+        return found
+    if entity_type == "material" and value:
+        val_lower = str(value).lower()
+        if any(w in val_lower for w in ("asphalt", "mix", "hma", "binder", "tack", "shim", "paving", "rap", "millings")):
+            return "21"
+        return "20"
+    return ""
 
 
 @st.cache_data(ttl=30)
@@ -1254,21 +1263,39 @@ def render_review_tab() -> None:
                 quarry_options = list(master_quarries)
                 if captured_q and captured_q not in quarry_options:
                     quarry_options.insert(0, captured_q)
+                quarry_options.append("✏️ Custom Quarry...")
+
                 q_idx = quarry_options.index(captured_q) if captured_q in quarry_options else 0
-                edited["quarry_name"]   = st.selectbox("Quarry", quarry_options, index=q_idx)
+                sel_q = st.selectbox("Quarry", quarry_options, index=q_idx, key=f"q_sel_{selected_id}")
+                if sel_q == "✏️ Custom Quarry...":
+                    edited["quarry_name"] = st.text_input("Enter Custom Quarry Name", value=captured_q, key=f"q_custom_{selected_id}")
+                else:
+                    edited["quarry_name"] = sel_q
 
                 captured_cust = str(row["sold_to"] or "").strip()
                 cust_options = list(master_customers)
                 if captured_cust and captured_cust not in cust_options:
                     cust_options.insert(0, captured_cust)
+                cust_options.append("✏️ Custom Customer...")
+
                 c_idx = cust_options.index(captured_cust) if captured_cust in cust_options else 0
-                edited["sold_to"]       = st.selectbox("Customer (Sold To)", cust_options, index=c_idx)
+                sel_cust = st.selectbox("Customer (Sold To)", cust_options, index=c_idx, key=f"cust_sel_{selected_id}")
+                if sel_cust == "✏️ Custom Customer...":
+                    edited["sold_to"] = st.text_input("Enter Custom Customer Name", value=captured_cust, key=f"cust_custom_{selected_id}")
+                else:
+                    edited["sold_to"] = sel_cust
 
                 captured_mat = str(row["material_type"] or "").strip()
                 common_mats = ["Crusher Run", "3/4 Clear", "Hot Mix", "Stone Dust", "Rip Rap", "Pit Run", "Fill", "Aggregate", "Asphalt"]
                 mat_options = list(dict.fromkeys(([captured_mat] if captured_mat else []) + master_materials + common_mats))
+                mat_options.append("✏️ Custom Material...")
+
                 m_idx = mat_options.index(captured_mat) if captured_mat in mat_options else 0
-                edited["material_type"] = st.selectbox("Material", mat_options, index=m_idx)
+                sel_mat = st.selectbox("Material", mat_options, index=m_idx, key=f"mat_sel_{selected_id}")
+                if sel_mat == "✏️ Custom Material...":
+                    edited["material_type"] = st.text_input("Enter Custom Material Name", value=captured_mat, key=f"mat_custom_{selected_id}")
+                else:
+                    edited["material_type"] = sel_mat
 
             st.markdown("**Weights**")
             w1, w2, w3 = st.columns(3)
