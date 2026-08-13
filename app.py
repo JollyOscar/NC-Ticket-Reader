@@ -61,6 +61,7 @@ def _normalize_lookup_value(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
 
 
+@st.cache_data(ttl=300)
 def load_master_data() -> Dict[str, Dict[str, str]]:
     lookups: Dict[str, Dict[str, str]] = {"customer": {}, "quarry": {}, "material": {}}
     if not MASTER_DATA_PATH.exists():
@@ -95,7 +96,7 @@ def lookup_system_id(entity_type: str, value: str, lookups: Optional[Dict[str, D
     return ""
 
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=300)
 def get_master_data_canonical_names() -> Dict[str, List[str]]:
     names: Dict[str, List[str]] = {"customer": [], "quarry": [], "material": []}
     if not MASTER_DATA_PATH.exists():
@@ -109,6 +110,22 @@ def get_master_data_canonical_names() -> Dict[str, List[str]]:
     return names
 
 
+@st.cache_data(ttl=300)
+def get_master_data_id_map() -> Dict[str, Dict[str, str]]:
+    id_map: Dict[str, Dict[str, str]] = {"customer": {}, "quarry": {}, "material": {}}
+    if not MASTER_DATA_PATH.exists():
+        return id_map
+    with MASTER_DATA_PATH.open(newline="", encoding="utf-8-sig") as source:
+        for row in csv.DictReader(source):
+            entity_type = str(row.get("entity_type", "")).strip().lower()
+            name = str(row.get("name", "")).strip()
+            system_id = str(row.get("system_id", "")).strip()
+            if entity_type in id_map and name and system_id and system_id not in id_map[entity_type]:
+                id_map[entity_type][system_id] = name
+    return id_map
+
+
+@st.cache_data(ttl=300)
 def match_master_entity(entity_type: str, raw_text: str) -> Tuple[str, str]:
     """Fuzzy/token match raw text to canonical master data name and system ID."""
     import difflib
@@ -120,13 +137,14 @@ def match_master_entity(entity_type: str, raw_text: str) -> Tuple[str, str]:
     lookups = load_master_data()
     norm_input = _normalize_lookup_value(raw_str)
     canonical_names = get_master_data_canonical_names().get(entity_type, [])
+    id_map = get_master_data_id_map().get(entity_type, {})
 
-    # 1. Direct exact / normalized match
+    # 1. Direct exact / normalized match (O(1))
     direct_id = lookup_system_id(entity_type, raw_str, lookups)
     if direct_id:
-        for name in canonical_names:
-            if lookup_system_id(entity_type, name, lookups) == direct_id:
-                return (name, direct_id)
+        canonical_name = id_map.get(direct_id)
+        if canonical_name:
+            return (canonical_name, direct_id)
 
     # 2. Token / Substring / Fuzzy match
     if not canonical_names or len(norm_input) < 2:
@@ -137,7 +155,7 @@ def match_master_entity(entity_type: str, raw_text: str) -> Tuple[str, str]:
     best_sys_id = ""
 
     for canonical_name in canonical_names:
-        sys_id = lookup_system_id(entity_type, canonical_name, lookups)
+        sys_id = id_map.get(canonical_name) or lookup_system_id(entity_type, canonical_name, lookups)
         norm_canonical = _normalize_lookup_value(canonical_name)
 
         if norm_input and norm_canonical.startswith(norm_input):
