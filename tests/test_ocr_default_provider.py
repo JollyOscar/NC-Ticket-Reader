@@ -62,3 +62,23 @@ def test_sanitize_untrusted_fields_rejects_header_and_identifier_bleed():
     assert parsed["trucker"] == ""
     assert parsed["sold_to"] == "Valid Customer"
     assert parsed["material_type"] == "Road Base"
+
+
+def test_tesseract_orientation_selection_prefers_readable_form(monkeypatch):
+    class FakeImage:
+        def rotate(self, angle, expand):
+            return angle
+
+    monkeypatch.setattr(ocr, "_preprocess_for_ocr", lambda image: image)
+
+    def read_text(_image, angle):
+        if angle == 90:
+            return "DATE May 13/26 GROSS 25000 TARE 9800 NET 15200 MATERIAL Type 1"
+        return "unreadable"
+
+    prepared, raw_text, parsed, score = ocr._select_tesseract_candidate(FakeImage(), read_text)
+
+    assert prepared == 90
+    assert raw_text.startswith("DATE")
+    assert parsed["gross_weight"] == "25000"
+    assert score > 0

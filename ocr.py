@@ -1038,6 +1038,34 @@ def _parsed_field_score(parsed: Dict[str, str]) -> int:
     return score
 
 
+def _tesseract_candidate_score(raw_text: str, parsed: Dict[str, str]) -> int:
+    """Favor orientations that recognize both the form structure and its values."""
+    expected_labels = (
+        r"\bdate\b", r"\bjob\s*no\b", r"\blicense\b", r"\btrucker\b",
+        r"\bsold\s*to\b", r"\bdeliver\s*to\b", r"\bmaterial\b",
+        r"\bgross\b", r"\btare\b", r"\bnet\b", r"\breceived\s*by\b",
+    )
+    label_hits = sum(bool(re.search(pattern, raw_text, re.IGNORECASE)) for pattern in expected_labels)
+    return _parsed_field_score(parsed) * 100 + label_hits * 10
+
+
+def _select_tesseract_candidate(image: Any, read_text: Any) -> Tuple[Any, str, Dict[str, str], int]:
+    """Run sparse-text OCR in each cardinal orientation and keep the best form read."""
+    best: Optional[Tuple[Any, str, Dict[str, str], int]] = None
+    for angle in (0, 90, 180, 270):
+        candidate = image if angle == 0 else image.rotate(angle, expand=True)
+        prepared = _preprocess_for_ocr(candidate)
+        raw_text = read_text(prepared, angle)
+        parsed = parse_ticket_text(raw_text)
+        score = _tesseract_candidate_score(raw_text, parsed)
+        if best is None or score > best[3]:
+            best = (prepared, raw_text, parsed, score)
+
+    if best is None:
+        raise RuntimeError("No Tesseract orientation candidates were generated.")
+    return best
+
+
 def _extract_tesseract_spatial_fields(data: Dict[str, List[Any]], image_size: Tuple[int, int]) -> Dict[str, str]:
     words = _build_tesseract_word_index(data, image_size)
     labels = {
@@ -1088,11 +1116,14 @@ def _extract_with_pytesseract(image_path: Path) -> Tuple[Dict[str, str], float]:
     configured_cmd = _configure_tesseract_cmd()
     if configured_cmd:
         pytesseract.pytesseract.tesseract_cmd = configured_cmd
-    img = _preprocess_for_ocr(PilImage.open(image_path))
 
     primary_config = "--oem 1 --psm 11"
-    raw_text = pytesseract.image_to_string(img, config=primary_config)
-    parsed = parse_ticket_text(raw_text)
+    source_image = PilImage.open(image_path)
+    img, raw_text, parsed, orientation_score = _select_tesseract_candidate(
+        source_image,
+        lambda candidate, angle: pytesseract.image_to_string(candidate, config=primary_config),
+    )
+    source_image.close()
     selected_config = primary_config
 
     if _parsed_field_score(parsed) <= 2:
@@ -1122,7 +1153,10 @@ def _extract_with_pytesseract(image_path: Path) -> Tuple[Dict[str, str], float]:
     parsed["source_site"] = parsed.get("quarry_name", "")
     parsed["destination_site"] = parsed.get("deliver_to", "")
     parsed["__raw_text"] = raw_text
-    logger.info("pytesseract_request_success image=%s config=%s conf=%.2f", image_path, selected_config, avg_conf)
+    logger.info(
+        "pytesseract_request_success image=%s config=%s score=%s conf=%.2f",
+        image_path, selected_config, orientation_score, avg_conf,
+    )
     return parsed, avg_conf
 
 
