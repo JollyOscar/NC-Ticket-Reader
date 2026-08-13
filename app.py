@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -12,7 +13,15 @@ import boto3
 import psycopg2
 import streamlit as st
 from psycopg2.extras import RealDictCursor
-from backend_logging import get_log_path, get_logger, tail_log_lines
+from backend_logging import (
+    configure_sentry,
+    get_log_path,
+    get_logger,
+    log_error,
+    log_performance,
+    new_correlation_id,
+    tail_log_lines,
+)
 from ocr import extract_ticket_data
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -146,8 +155,17 @@ def require_authenticated_actor() -> str:
             bool(credentials) or not allowed_names or name.strip().lower() in allowed_names
         )
         if valid_name and hmac.compare_digest(entered_password, expected_password):
+            session_id = new_correlation_id()
             st.session_state["authenticated_actor"] = name.strip()
+            st.session_state["session_id"] = session_id
+            logger.info("auth_success actor=%s session_id=%s", name.strip(), session_id)
             st.rerun()
+        else:
+            reason = "invalid_name" if not name.strip() else (
+                "no_credentials_configured" if not expected_password else
+                ("not_allowed" if not valid_name else "invalid_password")
+            )
+            logger.warning("auth_failed actor=%s reason=%s", name.strip() or "<empty>", reason)
         st.error("Invalid name or password.")
     st.stop()
     return ""
@@ -183,11 +201,23 @@ def upload_to_bucket(local_path: Path, prefix: str) -> Optional[str]:
         return None
     bucket_name = os.getenv("AWS_S3_BUCKET_NAME")
     key = f"{prefix.rstrip('/')}/{dt.datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')}_{local_path.name}"
+    file_size = local_path.stat().st_size if local_path.exists() else 0
     try:
-        s3.upload_file(str(local_path), bucket_name, key)
+        with log_performance("s3", f"upload bucket={bucket_name} key={key} size_bytes={file_size}"):
+            s3.upload_file(str(local_path), bucket_name, key)
+        logger.info(
+            "bucket_upload_success bucket=%s key=%s size_bytes=%s", bucket_name, key, file_size
+        )
         return f"s3://{bucket_name}/{key}"
     except Exception as exc:
-        logger.warning("bucket_upload_failed prefix=%s key=%s error=%s", prefix, key, exc)
+        error_name = type(exc).__name__
+        if error_name in {"NoCredentialsError", "ClientError", "PartialCredentialsError"}:
+            log_error(
+                "s3", "bucket_upload_auth_failed", exc,
+                bucket=bucket_name, key=key,
+            )
+        else:
+            log_error("s3", "bucket_upload_failed", exc, bucket=bucket_name, key=key)
         return None
 
 
@@ -209,9 +239,16 @@ def load_stored_file(file_reference: str) -> Optional[bytes]:
     if not s3 or not bucket_name or not key:
         return None
     try:
-        return s3.get_object(Bucket=bucket_name, Key=key)["Body"].read()
+        with log_performance("s3", f"download bucket={bucket_name} key={key}"):
+            data = s3.get_object(Bucket=bucket_name, Key=key)["Body"].read()
+        logger.info("bucket_download_success bucket=%s key=%s size_bytes=%s", bucket_name, key, len(data))
+        return data
     except Exception as exc:
-        logger.warning("bucket_download_failed reference=%s error=%s", file_reference, exc)
+        error_name = type(exc).__name__
+        if error_name in {"NoCredentialsError", "ClientError", "PartialCredentialsError"}:
+            log_error("s3", "bucket_download_auth_failed", exc, bucket=bucket_name, key=key)
+        else:
+            log_error("s3", "bucket_download_failed", exc, bucket=bucket_name, key=key)
         return None
 
 
@@ -219,6 +256,19 @@ def _dict_cursor(conn):
     if postgres_enabled():
         return conn.cursor(cursor_factory=RealDictCursor)
     return conn
+
+
+_SLOW_QUERY_THRESHOLD_MS = 1000
+
+
+def _query_type_and_table(query: str) -> tuple:
+    match = re.match(r"\s*(\w+)", query, flags=re.IGNORECASE)
+    query_type = match.group(1).upper() if match else "UNKNOWN"
+    table_match = re.search(
+        r"\b(?:FROM|INTO|UPDATE|TABLE)\s+([A-Za-z_][A-Za-z0-9_]*)", query, flags=re.IGNORECASE
+    )
+    table = table_match.group(1) if table_match else "unknown"
+    return query_type, table
 
 
 class PostgresConnection:
@@ -230,22 +280,53 @@ class PostgresConnection:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
+        if exc_type is not None:
+            logger.warning("db_transaction_rollback error=%s: %s", exc_type.__name__, exc_value)
+        else:
+            logger.info("db_transaction_commit")
         return self._connection.__exit__(exc_type, exc_value, traceback)
 
     def cursor(self, *args, **kwargs):
         return self._connection.cursor(*args, **kwargs)
 
     def execute(self, query: str, parameters: Any = None):
+        query_type, table = _query_type_and_table(query)
+        start = time.time()
         cursor = self._connection.cursor()
         cursor.execute(query.replace("?", "%s"), parameters)
+        elapsed_ms = (time.time() - start) * 1000
+        if elapsed_ms > _SLOW_QUERY_THRESHOLD_MS:
+            logger.warning(
+                "db_slow_query type=%s table=%s duration_ms=%.0f rowcount=%s",
+                query_type, table, elapsed_ms, cursor.rowcount,
+            )
+        else:
+            logger.info(
+                "db_query type=%s table=%s duration_ms=%.0f rowcount=%s",
+                query_type, table, elapsed_ms, cursor.rowcount,
+            )
         return cursor
 
 
-def get_conn() -> Any:
+def get_conn(max_retries: int = 2) -> Any:
     if postgres_enabled():
-        conn = psycopg2.connect(os.getenv("DATABASE_URL"), sslmode="require")
-        conn.autocommit = False
-        return PostgresConnection(conn)
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                conn = psycopg2.connect(os.getenv("DATABASE_URL"), sslmode="require")
+                conn.autocommit = False
+                if attempt > 1:
+                    logger.info("db_connect_recovered attempt=%s", attempt)
+                return PostgresConnection(conn)
+            except Exception as exc:
+                if attempt > max_retries:
+                    log_error("db", "db_connect_failed", exc, attempt=attempt)
+                    raise
+                logger.warning(
+                    "db_connect_retry attempt=%s max_retries=%s error=%s",
+                    attempt, max_retries, exc,
+                )
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
@@ -966,6 +1047,25 @@ def validate_deliver_to_quality(value: str) -> Optional[str]:
     return None
 
 
+def _run_ocr(image_path: Path, correlation_id: str):
+    """Run OCR extraction with timing and structured error logging."""
+    with log_performance("ocr", f"extract_ticket_data file={image_path.name} correlation_id={correlation_id}"):
+        try:
+            fields, confidence, provider_used = extract_ticket_data(image_path)
+            raw_text = fields.get("__raw_text", "")
+            logger.info(
+                "ocr_success file=%s provider=%s confidence=%.2f text_len=%s correlation_id=%s",
+                image_path.name, provider_used, confidence, len(raw_text), correlation_id,
+            )
+            return fields, confidence, provider_used
+        except Exception as exc:
+            log_error(
+                "ocr", "ocr_failed", exc,
+                file=image_path.name, correlation_id=correlation_id,
+            )
+            raise
+
+
 def render_upload_tab() -> None:
     st.subheader("Upload tickets")
     actor = current_actor()
@@ -982,12 +1082,16 @@ def render_upload_tab() -> None:
 
         processed_count = 0
         for file in uploaded:
+            correlation_id = new_correlation_id()
             try:
                 file_bytes = file.getbuffer()
                 timestamp = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
                 file_path = UPLOAD_DIR / f"{timestamp}_{file.name}"
                 file_path.write_bytes(file_bytes)
-                logger.info("upload_saved file=%s size_bytes=%s path=%s", file.name, len(file_bytes), file_path)
+                logger.info(
+                    "upload_saved file=%s size_bytes=%s path=%s correlation_id=%s",
+                    file.name, len(file_bytes), file_path, correlation_id,
+                )
 
                 # PDF Multi-page Ticket Batch Handling
                 if file.name.lower().endswith(".pdf"):
@@ -1002,7 +1106,7 @@ def render_upload_tab() -> None:
                                     page_img_path = UPLOAD_DIR / page_img_name
                                     page_img_path.write_bytes(img.data)
 
-                                    fields, confidence, provider_used = extract_ticket_data(page_img_path)
+                                    fields, confidence, provider_used = _run_ocr(page_img_path, correlation_id)
                                     raw_ocr_text = fields.pop("__raw_text", "")
                                     fields.pop("__ocr_warning", None)
                                     stored_page_reference = persist_file(page_img_path, "uploads")
@@ -1015,13 +1119,13 @@ def render_upload_tab() -> None:
                     except Exception as pdf_exc:
                         logger.warning("pdf_extraction_failed file=%s error=%s", file.name, pdf_exc)
 
-                fields, confidence, provider_used = extract_ticket_data(file_path)
+                fields, confidence, provider_used = _run_ocr(file_path, correlation_id)
                 raw_ocr_text = fields.pop("__raw_text", "")
                 fields.pop("__ocr_warning", None)  # handled below
 
                 logger.info(
-                    "upload_processed file=%s provider=%s confidence=%.2f ticket_id=%s",
-                    file.name, provider_used, confidence, fields.get("ticket_id", ""),
+                    "upload_processed file=%s provider=%s confidence=%.2f ticket_id=%s correlation_id=%s",
+                    file.name, provider_used, confidence, fields.get("ticket_id", ""), correlation_id,
                 )
 
                 warning_msg = str(fields.get("__ocr_warning", "")).strip()
@@ -1033,7 +1137,10 @@ def render_upload_tab() -> None:
                 insert_ticket(fields, confidence, stored_file_reference, provider_used, raw_ocr_text, actor)
                 processed_count += 1
             except Exception as exc:
-                logger.exception("upload_processing_failed file=%s error=%s", file.name, exc)
+                log_error(
+                    "app", "upload_processing_failed", exc,
+                    file=file.name, correlation_id=correlation_id,
+                )
                 st.error(f"Failed to process {file.name}. Check backend log for details.")
 
         st.success(f"Successfully processed and queued {processed_count} ticket item(s).")
@@ -1441,6 +1548,7 @@ def main() -> None:
         menu_items={"Get Help": None, "Report a bug": None, "About": None},
     )
 
+    configure_sentry()
     actor = require_authenticated_actor()
     ensure_paths()
     init_db()
